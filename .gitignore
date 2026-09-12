@@ -20,4 +20,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Variables de entorno — nunca subir valores reales
 .env
+.env.local
+.env.*.local
+
+# Sí permitir la plantilla sin secretos
+!.env.example
