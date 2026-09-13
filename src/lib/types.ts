@@ -17,14 +17,8 @@ export type EstadoProyecto =
 export type PrioridadNivel = 'baja' | 'media' | 'alta' | 'urgente';
 export type EstadoTarea = 'no_iniciado' | 'en_progreso' | 'en_espera' | 'hecho';
 export type TipoRaci = 'responsable' | 'aprueba' | 'consultado' | 'informado';
-export type TipoReunion =
-  | 'kickoff'
-  | 'seguimiento'
-  | 'cierre'
-  | 'interna'
-  | 'con_cliente'
-  | 'otra';
-export type TipoComunicacion = 'llamada' | 'correo' | 'mensaje' | 'otro';
+export type TipoReunion = string;
+export type TipoComunicacion = string;
 
 export interface Usuario {
   id: string;

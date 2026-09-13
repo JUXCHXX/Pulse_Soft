@@ -60,6 +60,32 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
+CREATE OR REPLACE FUNCTION public.normalizar_tipo_reunion_importacion(p_valor text)
+RETURNS text AS $$
+DECLARE
+  v_valor text := lower(trim(coalesce(p_valor, '')));
+BEGIN
+  v_valor := translate(v_valor, 'áéíóúüñ', 'aeiouun');
+  IF v_valor LIKE '%persona%' THEN RETURN 'presencial'; END IF;
+  IF v_valor LIKE '%virtual%' THEN RETURN 'virtual'; END IF;
+  IF v_valor LIKE '%convocatoria%' THEN RETURN 'convocatoria'; END IF;
+  RETURN coalesce(nullif(v_valor, ''), 'presencial');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION public.normalizar_tipo_comunicacion_importacion(p_valor text)
+RETURNS text AS $$
+DECLARE
+  v_valor text := lower(trim(coalesce(p_valor, '')));
+BEGIN
+  v_valor := translate(v_valor, 'áéíóúüñ', 'aeiouun');
+  IF v_valor IN ('email', 'e-mail', 'correo') THEN RETURN 'correo'; END IF;
+  IF v_valor IN ('texto', 'mensaje') THEN RETURN 'mensaje'; END IF;
+  IF v_valor = 'llamada' THEN RETURN 'llamada'; END IF;
+  RETURN coalesce(nullif(v_valor, ''), 'otro');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 CREATE OR REPLACE FUNCTION public.importar_datos_interno(payload jsonb)
 RETURNS jsonb AS $$
 DECLARE
@@ -87,8 +113,8 @@ DECLARE
   v_prioridad prioridad_nivel;
   v_estado_t estado_tarea;
   v_prioridad_t prioridad_nivel;
-  v_tipo_r tipo_reunion;
-  v_tipo_c tipo_comunicacion;
+  v_tipo_r text;
+  v_tipo_c text;
 BEGIN
   IF auth_rol() <> 'pmo' THEN
     RAISE EXCEPTION 'Solo la PMO puede importar datos';
@@ -255,7 +281,7 @@ BEGIN
     FOR v_reunion_rec IN SELECT value FROM jsonb_array_elements(payload->'reuniones') AS elements(value)
     LOOP
       BEGIN
-        v_tipo_r := COALESCE((v_reunion_rec->>'tipo')::tipo_reunion, 'seguimiento');
+        v_tipo_r := public.normalizar_tipo_reunion_importacion(v_reunion_rec->>'tipo');
 
         SELECT id INTO v_proyecto_id FROM proyectos
         WHERE nombre = v_reunion_rec->>'proyecto_nombre'
@@ -306,7 +332,7 @@ BEGIN
     FOR v_com_rec IN SELECT value FROM jsonb_array_elements(payload->'comunicaciones') AS elements(value)
     LOOP
       BEGIN
-        v_tipo_c := COALESCE((v_com_rec->>'tipo')::tipo_comunicacion, 'otro');
+        v_tipo_c := public.normalizar_tipo_comunicacion_importacion(v_com_rec->>'tipo');
 
         SELECT id INTO v_proyecto_id FROM proyectos
         WHERE nombre = v_com_rec->>'proyecto_nombre'

@@ -291,6 +291,20 @@ function ImportTab() {
   // All relationships use this one normalizer. It intentionally only removes
   // surrounding whitespace and normalizes case; it never guesses a name.
   const normalizeRelation = (value: string) => value.trim().toLocaleLowerCase();
+  const normalizeMeetingType = (value: string | undefined) => {
+    const normalized = normalize(value ?? '');
+    if (normalized.includes('persona')) return 'presencial';
+    if (normalized.includes('virtual')) return 'virtual';
+    if (normalized.includes('convocatoria')) return 'convocatoria';
+    return normalized || 'presencial';
+  };
+  const normalizeCommunicationType = (value: string | undefined) => {
+    const normalized = normalize(value ?? '');
+    if (normalized === 'email' || normalized === 'e-mail' || normalized === 'correo') return 'correo';
+    if (normalized === 'texto' || normalized === 'mensaje') return 'mensaje';
+    if (normalized === 'llamada') return 'llamada';
+    return normalized || 'otro';
+  };
   const sanitizeNumeric = (value: string | undefined) => {
     const cleaned = (value ?? '').replace(/[^0-9,.-]/g, '');
     if (!/[0-9]/.test(cleaned)) return null;
@@ -627,7 +641,7 @@ function ImportTab() {
           proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
           nombre: r.data.nombre,
-          tipo: r.data.tipo?.toLowerCase() ?? 'seguimiento',
+          tipo: normalizeMeetingType(r.data.tipo),
           estado: r.data.estado?.toLowerCase() ?? 'programada',
           fecha: r.data.fecha ?? '',
           hora: '',
@@ -638,7 +652,7 @@ function ImportTab() {
         payload.comunicaciones.push({
           proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
-          tipo: r.data.tipo?.toLowerCase() ?? 'otro',
+          tipo: normalizeCommunicationType(r.data.tipo),
           fecha: r.data.fecha ?? '',
           resultado: r.data.resultado ?? '',
           notas: r.data.notas ?? '',

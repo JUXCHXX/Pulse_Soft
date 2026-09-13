@@ -46,19 +46,15 @@ export const ROLES: { value: RolUsuario; label: string }[] = [
 ];
 
 export const TIPOS_REUNION: { value: TipoReunion; label: string }[] = [
-  { value: 'kickoff', label: 'Kickoff' },
-  { value: 'seguimiento', label: 'Seguimiento' },
-  { value: 'cierre', label: 'Cierre' },
-  { value: 'interna', label: 'Interna' },
-  { value: 'con_cliente', label: 'Con cliente' },
-  { value: 'otra', label: 'Otra' },
+  { value: 'presencial', label: 'Presencial' },
+  { value: 'virtual', label: 'Virtual' },
+  { value: 'convocatoria', label: 'Convocatoria' },
 ];
 
 export const TIPOS_COMUNICACION: { value: TipoComunicacion; label: string }[] = [
   { value: 'llamada', label: 'Llamada' },
   { value: 'correo', label: 'Correo' },
   { value: 'mensaje', label: 'Mensaje' },
-  { value: 'otro', label: 'Otro' },
 ];
 
 export function getEstadoProyecto(value: string) {
