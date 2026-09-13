@@ -569,9 +569,17 @@ function ImportTab() {
         .filter((row) => row.hoja === 'Lista de Equipo')
         .map((row) => ({ nombre: row.data.nombre, email: row.data.email })),
     ];
-    const importedProjectNames = new Set(
-      rows.filter((row) => row.hoja === 'Base de datos del proyecto').map((row) => normalizeRelation(row.data.nombre)),
-    );
+    const importedProjectNames = new Set(proyectosExistentes.map((project) => normalizeRelation(project.nombre)));
+    const ensureProject = (projectName: string) => {
+      const normalizedName = normalizeRelation(projectName);
+      if (!projectName || importedProjectNames.has(normalizedName)) return;
+      payload.proyectos.push({
+        nombre: projectName.trim(), descripcion: '', categoria: 'implementacion', estado: 'no_iniciado',
+        prioridad: 'media', linea_producto: '', fecha_inicio: '', fecha_limite: '', valor_estimado: null,
+        cliente: '', responsable_email: '',
+      });
+      importedProjectNames.add(normalizedName);
+    };
 
     rows.forEach((r) => {
       if (r.status === 'error') return;
@@ -607,14 +615,9 @@ function ImportTab() {
           cliente: '',
           responsable_email: responsableEmail ?? '',
         });
+        importedProjectNames.add(normalizeRelation(r.data.nombre));
       } else if (r.hoja === 'Lista de Tareas' && r.data.nombre_tarea) {
-        if (r.data.crear_proyecto === 'true' && !importedProjectNames.has(normalizeRelation(r.data.proyecto_nombre))) {
-          payload.proyectos.push({
-            nombre: r.data.proyecto_nombre.trim(), descripcion: '', categoria: 'implementacion', estado: 'no_iniciado',
-            prioridad: 'media', linea_producto: '', fecha_inicio: '', fecha_limite: '', valor_estimado: null, cliente: '', responsable_email: '',
-          });
-          importedProjectNames.add(normalizeRelation(r.data.proyecto_nombre));
-        }
+        if (r.data.crear_proyecto === 'true') ensureProject(r.data.proyecto_nombre);
         const asignados = r.data.propietario ? [r.data.propietario] : [];
         const asignadosEmails = asignados.map((nombre) => userDirectory.find((u) => normalizeRelation(u.nombre) === normalizeRelation(nombre))?.email).filter(Boolean);
         payload.tareas.push({
@@ -630,6 +633,7 @@ function ImportTab() {
           asignados_emails: asignadosEmails,
         });
       } else if (r.hoja === 'Registro de reuniones' && r.data.nombre) {
+        ensureProject(r.data.proyecto_nombre);
         const asistentes = r.data.asistentes ? r.data.asistentes.split(',').map((s) => s.trim()).filter(Boolean) : [];
         const asistentesEmails = asistentes.map((nombre) => {
           const resolution = attendeeResolutions[r.id]?.[nombre];
@@ -649,6 +653,7 @@ function ImportTab() {
           asistentes_emails: asistentesEmails,
         });
       } else if (r.hoja === 'Registro de comunicaciones' && r.data.proyecto_nombre) {
+        ensureProject(r.data.proyecto_nombre);
         payload.comunicaciones.push({
           proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
