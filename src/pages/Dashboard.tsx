@@ -72,6 +72,10 @@ export function Dashboard() {
           .limit(10),
       ]);
 
+      if (resProy.error) console.error('Error cargando resumen de proyectos:', resProy.error);
+      if (resCarga.error) console.error('Error cargando carga de consultores:', resCarga.error);
+      if (resCron.error) console.error('Error cargando cronómetros:', resCron.error);
+      if (resTareas.error) console.error('Error cargando alertas de tareas:', resTareas.error);
       if (resProy.data) setProyectos(resProy.data as VwProyectoResumen[]);
       if (resCarga.data) setCargaConsultores(resCarga.data as VwCargaConsultor[]);
       if (resCron.data) setCronometros(resCron.data as VwCronometroActivo[]);

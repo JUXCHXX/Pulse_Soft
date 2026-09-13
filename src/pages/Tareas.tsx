@@ -38,10 +38,11 @@ export function Tareas() {
 
   async function loadTareas() {
     setLoading(true);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('tareas')
       .select('*, proyectos(nombre), tarea_asignados(usuarios(nombre))')
       .order('fecha_limite', { ascending: true, nullsFirst: false });
+    if (error) console.error('Error cargando tareas:', error);
     setTareas((data as TareaRow[]) ?? []);
     setLoading(false);
   }
