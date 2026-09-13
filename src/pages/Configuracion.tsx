@@ -211,6 +211,7 @@ function ImportTab() {
   const [messageFilter, setMessageFilter] = useState<string | null>(null);
   const [rowsPerPage, setRowsPerPage] = useState<50 | 100 | 'all'>(50);
   const [page, setPage] = useState(1);
+  const [attendeeResolutions, setAttendeeResolutions] = useState<Record<string, Record<string, string>>>({});
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -341,6 +342,7 @@ function ImportTab() {
   }
 
   function handleFile(file: File) {
+    setAttendeeResolutions({});
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -458,6 +460,19 @@ function ImportTab() {
     rows.filter((row) => row.hoja === 'Base de datos del proyecto').map((row) => row.data.nombre)
       .concat(proyectosExistentes.map((project) => project.nombre)).filter(Boolean),
   )].sort((a, b) => a.localeCompare(b)), [rows, proyectosExistentes]);
+  const attendeeOptions = usuarios;
+  const attendeePeople = [
+    ...usuarios.map((user) => user.nombre),
+    ...rows.filter((row) => row.hoja === 'Lista de Equipo').map((row) => row.data.nombre)
+      .filter((name) => !usuarios.some((user) => normalizeRelation(user.nombre) === normalizeRelation(name))),
+  ];
+  const exactAttendeeMatch = (name: string) => attendeePeople.filter((person) => normalizeRelation(person) === normalizeRelation(name)).length === 1;
+  const unresolvedAttendees = (row: ImportRow) => {
+    if (row.hoja !== 'Registro de reuniones') return [];
+    const resolutions = attendeeResolutions[row.id] ?? {};
+    return (row.data.asistentes ?? '').split(',').map((name) => name.trim()).filter(Boolean)
+      .filter((name) => !exactAttendeeMatch(name) && !resolutions[name]);
+  };
   const errorGroups = useMemo(() => {
     const groups = new Map<string, number>();
     rows.filter((row) => row.status === 'error').forEach((row) => {
@@ -486,6 +501,27 @@ function ImportTab() {
         data: { ...row.data, proyecto_nombre: projectName, crear_proyecto: createNew ? 'true' : '' },
         status: remainingMessages.length ? 'error' : 'ok',
         message: remainingMessages.length ? remainingMessages.join(' · ') : `Proyecto resuelto manualmente: ${projectName}`,
+      };
+    }));
+    setPage(1);
+  }
+
+  function resolveAttendee(rowId: string, attendee: string, resolution: string) {
+    setAttendeeResolutions((current) => ({
+      ...current,
+      [rowId]: { ...current[rowId], [attendee]: resolution },
+    }));
+    setRows((currentRows) => currentRows.map((row) => {
+      if (row.id !== rowId) return row;
+      const resolutions = { ...(attendeeResolutions[rowId] ?? {}), [attendee]: resolution };
+      const unresolved = (row.data.asistentes ?? '').split(',').map((name) => name.trim()).filter(Boolean)
+        .filter((name) => !exactAttendeeMatch(name) && !resolutions[name]);
+      const remainingMessages = row.message.split(' · ').filter((message) => !message.startsWith('Asistente no resuelto exactamente:'));
+      if (unresolved.length) remainingMessages.push(...unresolved.map((name) => `Asistente no resuelto exactamente: ${name}`));
+      return {
+        ...row,
+        status: remainingMessages.length ? 'error' : 'ok',
+        message: remainingMessages.length ? remainingMessages.join(' · ') : 'Asistentes resueltos manualmente',
       };
     }));
     setPage(1);
@@ -562,7 +598,12 @@ function ImportTab() {
         });
       } else if (r.hoja === 'Registro de reuniones' && r.data.nombre) {
         const asistentes = r.data.asistentes ? r.data.asistentes.split(',').map((s) => s.trim()).filter(Boolean) : [];
-        const asistentesEmails = asistentes.map((nombre) => userDirectory.find((u) => normalizeRelation(u.nombre) === normalizeRelation(nombre))?.email).filter(Boolean);
+        const asistentesEmails = asistentes.map((nombre) => {
+          const resolution = attendeeResolutions[r.id]?.[nombre];
+          if (resolution === '__ignore__') return undefined;
+          const resolvedName = resolution || nombre;
+          return userDirectory.find((u) => normalizeRelation(u.nombre) === normalizeRelation(resolvedName))?.email;
+        }).filter(Boolean);
         payload.reuniones.push({
           proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
@@ -760,6 +801,21 @@ function ImportTab() {
                           <option value="__create_new__">Crear como proyecto nuevo</option>
                         </select>
                       )}
+                      {r.hoja === 'Registro de reuniones' && unresolvedAttendees(r).map((attendee) => (
+                        <label key={attendee} className="block mb-2 last:mb-0">
+                          <span className="block mb-1 text-[var(--text-secondary)]">Resolver «{attendee}»</span>
+                          <select
+                            value={attendeeResolutions[r.id]?.[attendee] ?? ''}
+                            onChange={(e) => { if (e.target.value) resolveAttendee(r.id, attendee, e.target.value); }}
+                            className="input-field !py-1.5 text-xs w-full"
+                            aria-label={`Resolver asistente ${attendee} de ${r.data.nombre}`}
+                          >
+                            <option value="" disabled>Elegir resolución…</option>
+                            <option value="__ignore__">Ignorar este asistente (recomendado)</option>
+                            {attendeeOptions.map((user) => <option key={user.id} value={user.nombre}>Asignar a {user.nombre}</option>)}
+                          </select>
+                        </label>
+                      ))}
                     </td>
                   </tr>
                 ))}
