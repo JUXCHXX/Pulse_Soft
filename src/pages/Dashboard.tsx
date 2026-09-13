@@ -62,7 +62,7 @@ export function Dashboard() {
     async function load() {
       setLoading(true);
       const [resProy, resCarga, resCron, resTareas] = await Promise.all([
-        supabase.from('vw_proyecto_resumen').select('*').order('updated_at', { ascending: false }),
+        supabase.from('vw_proyecto_resumen').select('*').order('nombre', { ascending: true }),
         supabase.from('vw_carga_consultor').select('*').order('tareas_atrasadas', { ascending: false }),
         supabase.from('vw_cronometros_activos').select('*'),
         supabase
