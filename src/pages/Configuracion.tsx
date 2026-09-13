@@ -215,7 +215,7 @@ function ImportTab() {
     label: string;
     nameFragment: string;
     primaryColumn: string;
-    headers: Record<string, string[]>;
+    headers: Record<string, string>;
     maxColumn?: number;
   };
 
@@ -227,12 +227,11 @@ function ImportTab() {
       nameFragment: 'Base de datos del proyecto',
       primaryColumn: 'nombre',
       headers: {
-        nombre: ['Nombre'], categoria: ['Categoría', 'Categoria'], estado: ['Estado'], prioridad: ['Prioridad'],
-        linea_producto: ['Etiquetas personalizadas', 'Línea de producto', 'Linea de producto'],
-        fecha_inicio: ['Fecha inicio'], fecha_limite: ['Fecha límite', 'Fecha limite'],
-        fecha_finalizacion: ['Fecha finalización', 'Fecha finalizacion'], progreso: ['Progreso%'],
-        asignado_a: ['Asignado a'], colaboradores: ['Colaboradores'], valor_estimado: ['Valor estimado'],
-        responsable: ['Responsable'], a_cargo: ['A cargo'], consultado: ['Consultado'], informado: ['Informado'],
+        nombre: 'Nombre del proyecto', categoria: 'Categoria', estado: 'Estado', prioridad: 'Prioridad',
+        linea_producto: 'Etiquetas personalizadas', fecha_inicio: 'Fecha de inicio', fecha_limite: 'Fecha límite',
+        fecha_finalizacion: 'Fecha de finalización', asignado_a: 'Asignado a', colaboradores: 'Colaboradores',
+        valor_estimado: 'Valor estimado', responsable: 'Responsable', a_cargo: 'A cargo',
+        consultado: 'Consultado', informado: 'Informado',
       },
     },
     {
@@ -242,60 +241,76 @@ function ImportTab() {
       // Columns B–L only. O onward is Excel's filtered-view panel, not source data.
       maxColumn: 11,
       headers: {
-        proyecto_nombre: ['Nombre del proyecto'], nombre_tarea: ['Nombre de la tarea'],
-        tiempo_horas: ['Tiempo en horas'], fecha_inicio: ['Fecha inicio'], hecho: ['Hecho'],
-        fecha_finalizacion: ['Fecha de finalización', 'Fecha de finalizacion'], estado: ['Estado de la tarea'],
-        prioridad: ['Prioridad de tareas'], propietario: ['Propietario de la tarea'], notas: ['Notas de la tarea'],
+        proyecto_nombre: 'Nombre del proyecto', nombre_tarea: 'Nombre de la tarea',
+        tiempo_horas: 'Tiempo en horas', fecha_inicio: 'Fecha inicio', hecho: 'Hecho',
+        fecha_finalizacion: 'Fecha de finalización', estado: 'Estado de la tarea',
+        prioridad: 'Prioridad de tareas', propietario: 'Propietario de la tarea', notas: 'Notas de la tarea',
       },
     },
     {
       label: 'Lista de Equipo',
       nameFragment: 'Lista de Equipo',
       primaryColumn: 'nombre',
-      headers: { nombre: ['Nombre'], rol: ['Rol'], email: ['Email', 'Correo', 'Correo electrónico', 'Correo electronico'], tarifa: ['Tarifa', 'Tarifa/hora'] },
+      headers: {
+        nombre: 'Lista de miembros del equipo', rol: 'Rol',
+        recuento_proyectos: 'Recuento de proyectos', conteo_tareas: 'Conteo de tareas',
+      },
     },
     // These two tabs retain the existing import contract. Their headers are
     // also resolved by text and their row is detected instead of assumed.
     {
       label: 'Registro de reuniones',
       nameFragment: 'Registro de reuniones',
-      primaryColumn: 'Reunión',
+      primaryColumn: 'nombre',
       headers: {
-        Reunión: ['Reunión', 'Reunion', 'Nombre de la reunión', 'Nombre de la reunion'], Proyecto: ['Proyecto'],
-        Tipo: ['Tipo'], Fecha: ['Fecha'], Hora: ['Hora'], Asistentes: ['Asistentes'], Notas: ['Notas'],
+        proyecto_nombre: 'Nombre del proyecto', fecha: 'Fecha de la reunión', nombre: 'Nombre de la reunión',
+        tipo: 'Tipo de reunión', estado: 'Estado de la reunión', asistentes: 'Asistentes a la reunión',
+        notas: 'Notas de la reunión',
       },
     },
     {
       label: 'Registro de comunicaciones',
       nameFragment: 'Registro de comunicaciones',
-      primaryColumn: 'Proyecto',
-      headers: { Proyecto: ['Proyecto'], Tipo: ['Tipo'], Fecha: ['Fecha'], Resultado: ['Resultado'], Notas: ['Notas'], Responsable: ['Responsable'] },
+      primaryColumn: 'proyecto_nombre',
+      headers: {
+        proyecto_nombre: 'Nombre del proyecto', fecha: 'Fecha de comunicación',
+        tipo: 'Tipo de comunicación', resultado: 'Resultado', notas: 'Notas de comunicación',
+      },
     },
   ];
 
   const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase();
 
-  function findHeaderRow(sheet: XLSX.WorkSheet, firstHeader: string, maxColumn?: number): number {
+  const headerText = (value: unknown) => String(value ?? '').trim();
+
+  function findHeaderRow(sheet: XLSX.WorkSheet, expectedHeaders: string[], maxColumn?: number): number {
     const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1:A1');
     const lastColumn = Math.min(range.e.c, maxColumn ?? range.e.c);
+    let bestRow = -1;
+    let bestMatches = 0;
     for (let r = range.s.r; r <= Math.min(range.e.r, 29); r++) {
+      const found = new Set<string>();
       for (let c = range.s.c; c <= lastColumn; c++) {
         const cell = sheet[XLSX.utils.encode_cell({ r, c })];
-        if (cell && normalize(String(cell.v ?? '')) === normalize(firstHeader)) return r;
+        const text = headerText(cell?.v);
+        if (expectedHeaders.includes(text)) found.add(text);
+      }
+      if (found.size > bestMatches) {
+        bestRow = r;
+        bestMatches = found.size;
       }
     }
-    return -1;
+    return bestMatches > 0 ? bestRow : -1;
   }
 
   function mapColumns(sheet: XLSX.WorkSheet, headerRow: number, definition: SheetDefinition): Record<string, number> {
     const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1:A1');
     const lastColumn = Math.min(range.e.c, definition.maxColumn ?? range.e.c);
     const columns: Record<string, number> = {};
-    for (const [field, aliases] of Object.entries(definition.headers)) {
-      const aliasSet = new Set(aliases.map(normalize));
+    for (const [field, expectedHeader] of Object.entries(definition.headers)) {
       for (let c = range.s.c; c <= lastColumn; c++) {
         const cell = sheet[XLSX.utils.encode_cell({ r: headerRow, c })];
-        if (cell && aliasSet.has(normalize(String(cell.v ?? '')))) {
+        if (cell && headerText(cell.v) === expectedHeader) {
           columns[field] = c;
           break;
         }
@@ -332,15 +347,17 @@ function ImportTab() {
           }
           foundSheets.add(definition.label);
           const sheet = wb.Sheets[sheetName];
-          const firstHeader = definition.headers[definition.primaryColumn][0];
-          const headerRow = findHeaderRow(sheet, firstHeader, definition.maxColumn);
+          const headerRow = findHeaderRow(sheet, Object.values(definition.headers), definition.maxColumn);
           if (headerRow === -1) {
-            allRows.push({ hoja: sheetName, data: {}, status: 'error', message: `No se encontró el encabezado «${firstHeader}» en las primeras 30 filas` });
+            allRows.push({ hoja: sheetName, data: {}, status: 'error', message: 'No se encontró ninguna fila de encabezados esperada en las primeras 30 filas' });
             continue;
           }
           const columns = mapColumns(sheet, headerRow, definition);
-          if (columns[definition.primaryColumn] === undefined) {
-            allRows.push({ hoja: sheetName, data: {}, status: 'error', message: `No se pudo mapear la columna «${firstHeader}»` });
+          const missingHeaders = Object.entries(definition.headers)
+            .filter(([field]) => columns[field] === undefined)
+            .map(([, header]) => `No se encontró la columna «${header}» en la hoja «${sheetName}»`);
+          if (missingHeaders.length) {
+            allRows.push({ hoja: sheetName, data: {}, status: 'error', message: missingHeaders.join(' · ') });
             continue;
           }
           const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1:A1');
@@ -351,24 +368,30 @@ function ImportTab() {
           }
         }
 
-        // Validate people only after all tabs have been read, so imported users
-        // with a real email are also available to project/task assignments.
-        const importedUsers = allRows.filter((row) => row.hoja === 'Lista de Equipo' && row.data.email)
-          .map((row) => ({ nombre: row.data.nombre, email: row.data.email }));
-        const people = [...usuarios, ...importedUsers];
+        // The workbook's team tab has no email column. Its names still form
+        // the authoritative list for validating owners before import.
+        const sameName = (left: string, right: string) => left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+        const teamMembers = allRows.filter((row) => row.hoja === 'Lista de Equipo')
+          .map((row) => ({ nombre: row.data.nombre, email: row.data.email }))
+          // A member already registered in the app is the same person, not an
+          // ambiguous second match merely because the workbook lists them too.
+          .filter((member) => !usuarios.some((user) => sameName(user.nombre, member.nombre)));
+        const people = [...usuarios, ...teamMembers];
         for (const row of allRows) {
           if (row.status === 'error') continue;
           const errors: string[] = [];
           const warnings: string[] = [];
-          const exactMatches = (name: string) => people.filter((person) => normalize(person.nombre) === normalize(name));
-          if (row.hoja === 'Lista de Equipo') {
-            if (!row.data.email) warnings.push('Sin email: se muestra para control, pero no se puede crear/actualizar el usuario');
-            if (!row.data.rol) warnings.push('Falta rol (se usará consultor_junior)');
-          }
+          const exactName = (name: string) => name.trim().toLocaleLowerCase();
+          const exactMatches = (name: string) => people.filter((person) => exactName(person.nombre) === exactName(name));
           if (row.hoja === 'Base de datos del proyecto') {
             if (!row.data.nombre) errors.push('Falta nombre del proyecto');
-            if (row.data.responsable && exactMatches(row.data.responsable).length !== 1) {
-              errors.push(`Responsable no resuelto exactamente: ${row.data.responsable}`);
+            const raciLabels: Record<string, string> = {
+              responsable: 'Responsable', a_cargo: 'A cargo', consultado: 'Consultado', informado: 'Informado',
+            };
+            for (const field of ['responsable', 'a_cargo', 'consultado', 'informado']) {
+              if (row.data[field] && exactMatches(row.data[field]).length !== 1) {
+                errors.push(`${raciLabels[field]} no resuelto exactamente: ${row.data[field]}`);
+              }
             }
           }
           if (row.hoja === 'Lista de Tareas') {
@@ -376,6 +399,11 @@ function ImportTab() {
             if (!row.data.proyecto_nombre) errors.push('Falta nombre del proyecto');
             if (row.data.propietario && exactMatches(row.data.propietario).length !== 1) {
               errors.push(`Propietario no resuelto exactamente: ${row.data.propietario}`);
+            }
+          }
+          if (row.hoja === 'Registro de reuniones' && row.data.asistentes) {
+            for (const attendee of row.data.asistentes.split(',').map((name) => name.trim()).filter(Boolean)) {
+              if (exactMatches(attendee).length !== 1) errors.push(`Asistente no resuelto exactamente: ${attendee}`);
             }
           }
           if (errors.length) { row.status = 'error'; row.message = errors.join(' · '); }
@@ -409,7 +437,7 @@ function ImportTab() {
     const userDirectory = [
       ...usuarios,
       ...rows
-        .filter((row) => row.hoja === 'Lista de Equipo' && row.data.email)
+        .filter((row) => row.hoja === 'Lista de Equipo')
         .map((row) => ({ nombre: row.data.nombre, email: row.data.email })),
     ];
 
@@ -462,28 +490,29 @@ function ImportTab() {
           tiempo_estimado_horas: r.data.tiempo_horas ?? '',
           asignados_emails: asignadosEmails,
         });
-      } else if (r.hoja === 'Registro de reuniones' && r.data['Reunión']) {
-        const asistentes = r.data['Asistentes'] ? r.data['Asistentes'].split(/[,;]/).map((s) => s.trim()).filter(Boolean) : [];
-        const asistentesEmails = asistentes.map((nombre) => usuarios.find((u) => u.nombre.toLowerCase() === nombre.toLowerCase())?.email).filter(Boolean);
+      } else if (r.hoja === 'Registro de reuniones' && r.data.nombre) {
+        const asistentes = r.data.asistentes ? r.data.asistentes.split(',').map((s) => s.trim()).filter(Boolean) : [];
+        const asistentesEmails = asistentes.map((nombre) => userDirectory.find((u) => normalize(u.nombre) === normalize(nombre))?.email).filter(Boolean);
         payload.reuniones.push({
-          proyecto_nombre: r.data['Proyecto'],
+          proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
-          nombre: r.data['Reunión'],
-          tipo: r.data['Tipo']?.toLowerCase() ?? 'seguimiento',
-          fecha: r.data['Fecha'] ?? '',
-          hora: r.data['Hora'] ?? '',
-          notas: r.data['Notas'] ?? '',
+          nombre: r.data.nombre,
+          tipo: r.data.tipo?.toLowerCase() ?? 'seguimiento',
+          estado: r.data.estado?.toLowerCase() ?? 'programada',
+          fecha: r.data.fecha ?? '',
+          hora: '',
+          notas: r.data.notas ?? '',
           asistentes_emails: asistentesEmails,
         });
-      } else if (r.hoja === 'Registro de comunicaciones' && r.data['Proyecto']) {
+      } else if (r.hoja === 'Registro de comunicaciones' && r.data.proyecto_nombre) {
         payload.comunicaciones.push({
-          proyecto_nombre: r.data['Proyecto'],
+          proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
-          tipo: r.data['Tipo']?.toLowerCase() ?? 'otro',
-          fecha: r.data['Fecha'] ?? '',
-          resultado: r.data['Resultado'] ?? '',
-          notas: r.data['Notas'] ?? '',
-          usuario_email: usuarios.find((u) => u.nombre.toLowerCase() === r.data['Responsable']?.toLowerCase())?.email ?? '',
+          tipo: r.data.tipo?.toLowerCase() ?? 'otro',
+          fecha: r.data.fecha ?? '',
+          resultado: r.data.resultado ?? '',
+          notas: r.data.notas ?? '',
+          usuario_email: '',
         });
       }
     });
