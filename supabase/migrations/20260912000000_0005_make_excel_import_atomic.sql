@@ -8,7 +8,14 @@ original, pero lo convertimos en una excepción antes de devolver la RPC; al
 elevarla, PostgreSQL revierte toda la transacción de la llamada.
 */
 
-ALTER FUNCTION public.importar_datos(jsonb) RENAME TO importar_datos_interno;
+DO $$
+BEGIN
+  IF to_regprocedure('public.importar_datos(jsonb)') IS NOT NULL
+    AND to_regprocedure('public.importar_datos_interno(jsonb)') IS NULL THEN
+    ALTER FUNCTION public.importar_datos(jsonb) RENAME TO importar_datos_interno;
+  END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION public.importar_datos(payload jsonb)
 RETURNS jsonb AS $$
