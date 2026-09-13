@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Settings,
   FileSpreadsheet,
@@ -24,6 +24,7 @@ type Step = 'upload' | 'preview' | 'done';
 type RowStatus = 'ok' | 'warning' | 'error';
 
 interface ImportRow {
+  id: string;
   hoja: string;
   data: Record<string, string>;
   status: RowStatus;
@@ -205,10 +206,16 @@ function ImportTab() {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{ creados: number; actualizados: number; omitidos: number } | null>(null);
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const [proyectosExistentes, setProyectosExistentes] = useState<{ nombre: string }[]>([]);
+  const [previewFilter, setPreviewFilter] = useState<'all' | RowStatus>('all');
+  const [messageFilter, setMessageFilter] = useState<string | null>(null);
+  const [rowsPerPage, setRowsPerPage] = useState<50 | 100 | 'all'>(50);
+  const [page, setPage] = useState(1);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     supabase.from('usuarios').select('*').then(({ data }) => setUsuarios((data as Usuario[]) ?? []));
+    supabase.from('proyectos').select('nombre').then(({ data }) => setProyectosExistentes((data as { nombre: string }[]) ?? []));
   }, []);
 
   type SheetDefinition = {
@@ -280,6 +287,9 @@ function ImportTab() {
   ];
 
   const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase();
+  // All relationships use this one normalizer. It intentionally only removes
+  // surrounding whitespace and normalizes case; it never guesses a name.
+  const normalizeRelation = (value: string) => value.trim().toLocaleLowerCase();
 
   const headerText = (value: unknown) => String(value ?? '').trim();
 
@@ -342,14 +352,14 @@ function ImportTab() {
         for (const definition of SHEETS) {
           const sheetName = wb.SheetNames.find((name) => normalize(name).includes(normalize(definition.nameFragment)));
           if (!sheetName) {
-            allRows.push({ hoja: definition.label, data: {}, status: 'error', message: 'No se encontró la hoja requerida' });
+            allRows.push({ id: `missing-sheet:${definition.label}`, hoja: definition.label, data: {}, status: 'error', message: 'No se encontró la hoja requerida' });
             continue;
           }
           foundSheets.add(definition.label);
           const sheet = wb.Sheets[sheetName];
           const headerRow = findHeaderRow(sheet, Object.values(definition.headers), definition.maxColumn);
           if (headerRow === -1) {
-            allRows.push({ hoja: sheetName, data: {}, status: 'error', message: 'No se encontró ninguna fila de encabezados esperada en las primeras 30 filas' });
+            allRows.push({ id: `missing-header-row:${sheetName}`, hoja: sheetName, data: {}, status: 'error', message: 'No se encontró ninguna fila de encabezados esperada en las primeras 30 filas' });
             continue;
           }
           const columns = mapColumns(sheet, headerRow, definition);
@@ -357,20 +367,20 @@ function ImportTab() {
             .filter(([field]) => columns[field] === undefined)
             .map(([, header]) => `No se encontró la columna «${header}» en la hoja «${sheetName}»`);
           if (missingHeaders.length) {
-            allRows.push({ hoja: sheetName, data: {}, status: 'error', message: missingHeaders.join(' · ') });
+            allRows.push({ id: `missing-columns:${sheetName}`, hoja: sheetName, data: {}, status: 'error', message: missingHeaders.join(' · ') });
             continue;
           }
           const range = XLSX.utils.decode_range(sheet['!ref'] ?? 'A1:A1');
           for (let r = headerRow + 1; r <= range.e.r; r++) {
             const rowData = Object.fromEntries(Object.entries(columns).map(([field, column]) => [field, valueAt(sheet, r, column, field)]));
             if (!rowData[definition.primaryColumn]) break;
-            allRows.push({ hoja: definition.label, data: rowData, status: 'ok', message: `Fila ${r + 1}: lista para importar` });
+            allRows.push({ id: `${definition.label}:${r + 1}`, hoja: definition.label, data: rowData, status: 'ok', message: `Fila ${r + 1}: lista para importar` });
           }
         }
 
         // The workbook's team tab has no email column. Its names still form
         // the authoritative list for validating owners before import.
-        const sameName = (left: string, right: string) => left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+        const sameName = (left: string, right: string) => normalizeRelation(left) === normalizeRelation(right);
         const teamMembers = allRows.filter((row) => row.hoja === 'Lista de Equipo')
           .map((row) => ({ nombre: row.data.nombre, email: row.data.email }))
           // A member already registered in the app is the same person, not an
@@ -381,8 +391,7 @@ function ImportTab() {
           if (row.status === 'error') continue;
           const errors: string[] = [];
           const warnings: string[] = [];
-          const exactName = (name: string) => name.trim().toLocaleLowerCase();
-          const exactMatches = (name: string) => people.filter((person) => exactName(person.nombre) === exactName(name));
+          const exactMatches = (name: string) => people.filter((person) => normalizeRelation(person.nombre) === normalizeRelation(name));
           if (row.hoja === 'Base de datos del proyecto') {
             if (!row.data.nombre) errors.push('Falta nombre del proyecto');
             const raciLabels: Record<string, string> = {
@@ -393,10 +402,22 @@ function ImportTab() {
                 errors.push(`${raciLabels[field]} no resuelto exactamente: ${row.data[field]}`);
               }
             }
+            for (const field of ['asignado_a', 'colaboradores']) {
+              for (const person of (row.data[field] ?? '').split(/[,;]/).map((name) => name.trim()).filter(Boolean)) {
+                if (exactMatches(person).length !== 1) errors.push(`${field === 'asignado_a' ? 'Asignado a' : 'Colaborador'} no resuelto exactamente: ${person}`);
+              }
+            }
           }
           if (row.hoja === 'Lista de Tareas') {
             if (!row.data.nombre_tarea) errors.push('Falta nombre de tarea');
             if (!row.data.proyecto_nombre) errors.push('Falta nombre del proyecto');
+            const projectNames = allRows
+              .filter((candidate) => candidate.hoja === 'Base de datos del proyecto')
+              .map((candidate) => candidate.data.nombre)
+              .concat(proyectosExistentes.map((project) => project.nombre));
+            if (row.data.proyecto_nombre && !projectNames.some((name) => normalizeRelation(name) === normalizeRelation(row.data.proyecto_nombre))) {
+              errors.push(`Proyecto no encontrado: ${row.data.proyecto_nombre.trim()}`);
+            }
             if (row.data.propietario && exactMatches(row.data.propietario).length !== 1) {
               errors.push(`Propietario no resuelto exactamente: ${row.data.propietario}`);
             }
@@ -410,18 +431,21 @@ function ImportTab() {
           else if (warnings.length) { row.status = 'warning'; row.message = warnings.join(' · '); }
         }
 
-        if (!foundSheets.size) allRows.push({ hoja: 'Archivo', data: {}, status: 'error', message: 'No se reconoció ninguna hoja importable' });
+        if (!foundSheets.size) allRows.push({ id: 'unrecognized-file', hoja: 'Archivo', data: {}, status: 'error', message: 'No se reconoció ninguna hoja importable' });
         setRows(allRows);
+        setPreviewFilter(allRows.some((row) => row.status === 'error') ? 'error' : 'all');
+        setMessageFilter(null);
+        setPage(1);
         setFileName(file.name);
         setStep('preview');
       } catch (error) {
-        setRows([{ hoja: 'Archivo', data: {}, status: 'error', message: `No se pudo leer el Excel: ${error instanceof Error ? error.message : 'error desconocido'}` }]);
+        setRows([{ id: 'read-error', hoja: 'Archivo', data: {}, status: 'error', message: `No se pudo leer el Excel: ${error instanceof Error ? error.message : 'error desconocido'}` }]);
         setFileName(file.name);
         setStep('preview');
       }
     };
     reader.onerror = () => {
-      setRows([{ hoja: 'Archivo', data: {}, status: 'error', message: 'No se pudo leer el archivo seleccionado' }]);
+      setRows([{ id: 'file-read-error', hoja: 'Archivo', data: {}, status: 'error', message: 'No se pudo leer el archivo seleccionado' }]);
       setFileName(file.name);
       setStep('preview');
     };
@@ -430,6 +454,42 @@ function ImportTab() {
 
   const isPMO = usuario?.rol === 'pmo';
   const hasErrors = rows.some((r) => r.status === 'error');
+  const projectOptions = useMemo(() => [...new Set(
+    rows.filter((row) => row.hoja === 'Base de datos del proyecto').map((row) => row.data.nombre)
+      .concat(proyectosExistentes.map((project) => project.nombre)).filter(Boolean),
+  )].sort((a, b) => a.localeCompare(b)), [rows, proyectosExistentes]);
+  const errorGroups = useMemo(() => {
+    const groups = new Map<string, number>();
+    rows.filter((row) => row.status === 'error').forEach((row) => {
+      const group = row.message.split(':')[0].trim();
+      groups.set(group, (groups.get(group) ?? 0) + 1);
+    });
+    return [...groups.entries()].map(([message, count]) => ({ message, count }));
+  }, [rows]);
+  const filteredRows = useMemo(() => rows.filter((row) =>
+    (previewFilter === 'all' || row.status === previewFilter)
+    && (!messageFilter || row.message.startsWith(messageFilter)),
+  ), [rows, previewFilter, messageFilter]);
+  const totalPages = rowsPerPage === 'all' ? 1 : Math.max(1, Math.ceil(filteredRows.length / rowsPerPage));
+  const visibleRows = rowsPerPage === 'all'
+    ? filteredRows
+    : filteredRows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
+
+  function resolveProject(rowId: string, selectedProject: string) {
+    setRows((currentRows) => currentRows.map((row) => {
+      if (row.id !== rowId) return row;
+      const createNew = selectedProject === '__create_new__';
+      const projectName = createNew ? row.data.proyecto_nombre.trim() : selectedProject;
+      const remainingMessages = row.message.split(' · ').filter((message) => !message.startsWith('Proyecto no encontrado:'));
+      return {
+        ...row,
+        data: { ...row.data, proyecto_nombre: projectName, crear_proyecto: createNew ? 'true' : '' },
+        status: remainingMessages.length ? 'error' : 'ok',
+        message: remainingMessages.length ? remainingMessages.join(' · ') : `Proyecto resuelto manualmente: ${projectName}`,
+      };
+    }));
+    setPage(1);
+  }
 
   async function confirmImport() {
     setImporting(true);
@@ -440,6 +500,9 @@ function ImportTab() {
         .filter((row) => row.hoja === 'Lista de Equipo')
         .map((row) => ({ nombre: row.data.nombre, email: row.data.email })),
     ];
+    const importedProjectNames = new Set(
+      rows.filter((row) => row.hoja === 'Base de datos del proyecto').map((row) => normalizeRelation(row.data.nombre)),
+    );
 
     rows.forEach((r) => {
       if (r.status === 'error') return;
@@ -461,7 +524,7 @@ function ImportTab() {
         if (!['no_iniciado', 'en_progreso', 'en_espera', 'completado', 'cancelado'].includes(estado)) estado = 'no_iniciado';
         let prio = r.data.prioridad?.toLowerCase() ?? 'media';
         if (!['baja', 'media', 'alta', 'urgente'].includes(prio)) prio = 'media';
-        const responsableEmail = userDirectory.find((u) => normalize(u.nombre) === normalize(r.data.responsable ?? ''))?.email;
+        const responsableEmail = userDirectory.find((u) => normalizeRelation(u.nombre) === normalizeRelation(r.data.responsable ?? ''))?.email;
         payload.proyectos.push({
           nombre: r.data.nombre,
           descripcion: '',
@@ -476,8 +539,15 @@ function ImportTab() {
           responsable_email: responsableEmail ?? '',
         });
       } else if (r.hoja === 'Lista de Tareas' && r.data.nombre_tarea) {
+        if (r.data.crear_proyecto === 'true' && !importedProjectNames.has(normalizeRelation(r.data.proyecto_nombre))) {
+          payload.proyectos.push({
+            nombre: r.data.proyecto_nombre.trim(), descripcion: '', categoria: 'implementacion', estado: 'no_iniciado',
+            prioridad: 'media', linea_producto: '', fecha_inicio: '', fecha_limite: '', valor_estimado: '', cliente: '', responsable_email: '',
+          });
+          importedProjectNames.add(normalizeRelation(r.data.proyecto_nombre));
+        }
         const asignados = r.data.propietario ? [r.data.propietario] : [];
-        const asignadosEmails = asignados.map((nombre) => userDirectory.find((u) => normalize(u.nombre) === normalize(nombre))?.email).filter(Boolean);
+        const asignadosEmails = asignados.map((nombre) => userDirectory.find((u) => normalizeRelation(u.nombre) === normalizeRelation(nombre))?.email).filter(Boolean);
         payload.tareas.push({
           proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
@@ -492,7 +562,7 @@ function ImportTab() {
         });
       } else if (r.hoja === 'Registro de reuniones' && r.data.nombre) {
         const asistentes = r.data.asistentes ? r.data.asistentes.split(',').map((s) => s.trim()).filter(Boolean) : [];
-        const asistentesEmails = asistentes.map((nombre) => userDirectory.find((u) => normalize(u.nombre) === normalize(nombre))?.email).filter(Boolean);
+        const asistentesEmails = asistentes.map((nombre) => userDirectory.find((u) => normalizeRelation(u.nombre) === normalizeRelation(nombre))?.email).filter(Boolean);
         payload.reuniones.push({
           proyecto_nombre: r.data.proyecto_nombre,
           proyecto_cliente: '',
@@ -618,7 +688,42 @@ function ImportTab() {
             </div>
           )}
 
+          {errorGroups.length > 0 && (
+            <div className="card p-4">
+              <p className="text-xs font-semibold text-[var(--text-secondary)] mb-2">Errores agrupados</p>
+              <div className="flex flex-wrap gap-2">
+                {errorGroups.map((group) => (
+                  <button
+                    key={group.message}
+                    onClick={() => { setPreviewFilter('error'); setMessageFilter(group.message); setPage(1); }}
+                    className={`text-xs px-3 py-1.5 rounded-lg border ${messageFilter === group.message ? 'border-danger bg-danger/10 text-danger' : 'border-[var(--border)] text-[var(--text-secondary)]'}`}
+                  >
+                    {group.message}: {group.count} fila{group.count === 1 ? '' : 's'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="card p-4 overflow-x-auto">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-[var(--text-secondary)]" htmlFor="import-filter">Mostrar</label>
+                <select
+                  id="import-filter"
+                  value={previewFilter}
+                  onChange={(e) => { setPreviewFilter(e.target.value as 'all' | RowStatus); setMessageFilter(null); setPage(1); }}
+                  className="input-field !py-1.5 text-xs"
+                >
+                  <option value="error">❌ Con error</option>
+                  <option value="warning">⚠️ Necesitan dato</option>
+                  <option value="ok">✅ Listas</option>
+                  <option value="all">Todas</option>
+                </select>
+                {messageFilter && <button onClick={() => { setMessageFilter(null); setPage(1); }} className="text-xs text-[var(--accent)]">Quitar agrupación</button>}
+              </div>
+              <span className="text-xs text-[var(--text-secondary)]">{filteredRows.length} de {rows.length} filas</span>
+            </div>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)]">
@@ -626,11 +731,12 @@ function ImportTab() {
                   <th className="text-left text-xs font-medium text-[var(--text-secondary)] pb-2 pr-3">Hoja</th>
                   <th className="text-left text-xs font-medium text-[var(--text-secondary)] pb-2 pr-3">Datos</th>
                   <th className="text-left text-xs font-medium text-[var(--text-secondary)] pb-2">Mensaje</th>
+                  <th className="text-left text-xs font-medium text-[var(--text-secondary)] pb-2">Resolver</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, 50).map((r, i) => (
-                  <tr key={i} className="border-b border-[var(--border)] last:border-0">
+                {visibleRows.map((r) => (
+                  <tr key={r.id} className="border-b border-[var(--border)] last:border-0">
                     <td className="py-2 pr-3">
                       {r.status === 'ok' && <CheckCircle2 className="w-4 h-4 text-success" />}
                       {r.status === 'warning' && <AlertTriangle className="w-4 h-4 text-warning" />}
@@ -641,11 +747,47 @@ function ImportTab() {
                       {Object.entries(r.data).filter(([, v]) => v).slice(0, 3).map(([k, v]) => `${k}: ${v}`).join(' · ')}
                     </td>
                     <td className="py-2 text-xs text-[var(--text-secondary)]">{r.message}</td>
+                    <td className="py-2 text-xs min-w-52">
+                      {r.hoja === 'Lista de Tareas' && r.message.includes('Proyecto no encontrado:') && (
+                        <select
+                          defaultValue=""
+                          onChange={(e) => { if (e.target.value) resolveProject(r.id, e.target.value); }}
+                          className="input-field !py-1.5 text-xs w-full"
+                          aria-label={`Resolver proyecto de ${r.data.nombre_tarea}`}
+                        >
+                          <option value="" disabled>Elegir proyecto…</option>
+                          {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+                          <option value="__create_new__">Crear como proyecto nuevo</option>
+                        </select>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {rows.length > 50 && <p className="text-xs text-[var(--text-secondary)] text-center mt-3">Mostrando 50 de {rows.length} filas</p>}
+            <div className="flex flex-wrap items-center justify-between gap-3 mt-4 text-xs text-[var(--text-secondary)]">
+              <label className="flex items-center gap-2">Filas por página
+                <select value={rowsPerPage} onChange={(e) => { setRowsPerPage(e.target.value === 'all' ? 'all' : Number(e.target.value) as 50 | 100); setPage(1); }} className="input-field !py-1.5 text-xs">
+                  <option value="50">50</option><option value="100">100</option><option value="all">Todas</option>
+                </select>
+              </label>
+              {rowsPerPage !== 'all' && (
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1} className="btn-secondary !py-1 !px-2 disabled:opacity-50">Anterior</button>
+                  <span>Página {page} de {totalPages}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={totalPages}
+                    value={page}
+                    onChange={(e) => setPage(Math.min(totalPages, Math.max(1, Number(e.target.value) || 1)))}
+                    aria-label="Ir a página"
+                    className="input-field !py-1 !px-2 text-xs w-14"
+                  />
+                  <button onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page === totalPages} className="btn-secondary !py-1 !px-2 disabled:opacity-50">Siguiente</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
