@@ -98,9 +98,9 @@ export function Dashboard() {
     { name: 'Pendientes', value: tareasAtrasadas, color: '#F5A524' },
   ].filter((d) => d.value > 0);
 
-  const trendData = [...Array(8)].map((_, i) => ({
-    semana: `S${i + 1}`,
-    progreso: Math.round(30 + i * 8 + Math.random() * 10),
+  const trendData = proyectos.slice(0, 8).map((proyecto) => ({
+    proyecto: proyecto.nombre.length > 18 ? `${proyecto.nombre.slice(0, 18)}…` : proyecto.nombre,
+    progreso: Math.round(proyecto.progreso_pct ?? 0),
   }));
 
   const alertas = tareasAlertas
@@ -227,9 +227,9 @@ export function Dashboard() {
         <div className="card p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-[var(--text-secondary)]">
-              Tendencia de avance semanal
+              Progreso de proyectos recientes
             </h3>
-            <span className="text-xs text-[var(--text-secondary)]">Últimas 8 semanas</span>
+            <span className="text-xs text-[var(--text-secondary)]">Datos reales</span>
           </div>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
@@ -241,7 +241,7 @@ export function Dashboard() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="semana" stroke="var(--text-secondary)" fontSize={12} />
+                <XAxis dataKey="proyecto" stroke="var(--text-secondary)" fontSize={12} />
                 <YAxis stroke="var(--text-secondary)" fontSize={12} />
                 <Tooltip
                   contentStyle={{

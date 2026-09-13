@@ -666,9 +666,16 @@ function ImportTab() {
       }
     });
 
-    const { data, error } = await supabase.rpc('importar_datos', {
-      payload: { ...payload, nombre_archivo: fileName },
+    const importPayload: Record<string, unknown> = { ...payload, nombre_archivo: fileName };
+    console.info('[Pulsesoft] Payload de importación', {
+      archivo: fileName,
+      usuarios: payload.usuarios.length,
+      proyectos: payload.proyectos.length,
+      tareas: payload.tareas.length,
+      reuniones: payload.reuniones.length,
+      comunicaciones: payload.comunicaciones.length,
     });
+    const { data, error } = await supabase.rpc('importar_datos', { payload: importPayload });
 
     setImporting(false);
     if (error) {
