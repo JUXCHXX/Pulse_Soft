@@ -4,6 +4,62 @@
   Error details include the import block before the atomic wrapper raises them.
 */
 
+CREATE OR REPLACE FUNCTION public.sanitizar_numero_importacion(p_valor text)
+RETURNS numeric AS $$
+DECLARE
+  v_clean text := regexp_replace(trim(coalesce(p_valor, '')), '[^0-9,.-]', '', 'g');
+  v_last_comma int;
+  v_last_dot int;
+  v_separator text;
+  v_separator_count int;
+  v_decimals int;
+  v_normalized text;
+BEGIN
+  IF v_clean !~ '[0-9]' THEN
+    RETURN NULL;
+  END IF;
+
+  v_last_comma := CASE WHEN strpos(reverse(v_clean), ',') = 0 THEN 0 ELSE length(v_clean) - strpos(reverse(v_clean), ',') + 1 END;
+  v_last_dot := CASE WHEN strpos(reverse(v_clean), '.') = 0 THEN 0 ELSE length(v_clean) - strpos(reverse(v_clean), '.') + 1 END;
+  v_separator := CASE WHEN v_last_comma > v_last_dot THEN ',' ELSE '.' END;
+  v_separator_count := length(v_clean) - length(replace(v_clean, v_separator, ''));
+  v_decimals := CASE
+    WHEN v_separator_count = 1 THEN length(v_clean) - CASE WHEN v_separator = ',' THEN v_last_comma ELSE v_last_dot END - 1
+    ELSE 0
+  END;
+
+  IF v_last_comma > 0 AND v_last_dot > 0 THEN
+    IF v_separator = ',' THEN
+      v_normalized := replace(replace(v_clean, '.', ''), ',', '.');
+    ELSE
+      v_normalized := replace(v_clean, ',', '');
+    END IF;
+  ELSIF v_separator_count = 1 AND v_decimals BETWEEN 1 AND 2 THEN
+    v_normalized := replace(v_clean, v_separator, '.');
+  ELSE
+    v_normalized := replace(replace(v_clean, ',', ''), '.', '');
+  END IF;
+
+  BEGIN
+    RETURN v_normalized::numeric;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+  END;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION public.sanitizar_fecha_importacion(p_valor text)
+RETURNS date AS $$
+BEGIN
+  IF nullif(trim(coalesce(p_valor, '')), '') IS NULL THEN
+    RETURN NULL;
+  END IF;
+  RETURN trim(p_valor)::date;
+EXCEPTION WHEN OTHERS THEN
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 CREATE OR REPLACE FUNCTION public.importar_datos_interno(payload jsonb)
 RETURNS jsonb AS $$
 DECLARE
@@ -51,14 +107,14 @@ BEGIN
         IF v_usuario_id IS NULL THEN
           v_usuario_id := crear_usuario_auth_interno(
             v_usuario_rec->>'nombre', v_usuario_rec->>'email', v_usuario_rec->>'rol',
-            (v_usuario_rec->>'tarifa_hora')::numeric
+            public.sanitizar_numero_importacion(v_usuario_rec->>'tarifa_hora')
           );
           v_creados := v_creados + 1;
         ELSE
           UPDATE usuarios SET
             nombre = COALESCE(v_usuario_rec->>'nombre', nombre),
             rol = COALESCE((v_usuario_rec->>'rol')::rol_usuario, rol),
-            tarifa_hora = COALESCE((v_usuario_rec->>'tarifa_hora')::numeric, tarifa_hora)
+            tarifa_hora = COALESCE(public.sanitizar_numero_importacion(v_usuario_rec->>'tarifa_hora'), tarifa_hora)
           WHERE id = v_usuario_id;
           v_actualizados := v_actualizados + 1;
         END IF;
@@ -92,9 +148,9 @@ BEGIN
           ) VALUES (
             v_proyecto_rec->>'nombre', v_proyecto_rec->>'descripcion', v_categoria,
             v_proyecto_rec->>'linea_producto', v_estado, v_prioridad,
-            NULLIF(v_proyecto_rec->>'fecha_inicio', '')::date,
-            NULLIF(v_proyecto_rec->>'fecha_limite', '')::date,
-            NULLIF(v_proyecto_rec->>'valor_estimado', '')::numeric,
+            public.sanitizar_fecha_importacion(v_proyecto_rec->>'fecha_inicio'),
+            public.sanitizar_fecha_importacion(v_proyecto_rec->>'fecha_limite'),
+            public.sanitizar_numero_importacion(v_proyecto_rec->>'valor_estimado'),
             v_proyecto_rec->>'cliente', v_realizado_por
           ) RETURNING id INTO v_proyecto_id;
           v_creados := v_creados + 1;
@@ -102,9 +158,9 @@ BEGIN
           UPDATE proyectos SET
             descripcion = COALESCE(v_proyecto_rec->>'descripcion', descripcion),
             categoria = v_categoria, estado = v_estado, prioridad = v_prioridad,
-            fecha_inicio = COALESCE(NULLIF(v_proyecto_rec->>'fecha_inicio', '')::date, fecha_inicio),
-            fecha_limite = COALESCE(NULLIF(v_proyecto_rec->>'fecha_limite', '')::date, fecha_limite),
-            valor_estimado = COALESCE(NULLIF(v_proyecto_rec->>'valor_estimado', '')::numeric, valor_estimado)
+            fecha_inicio = COALESCE(public.sanitizar_fecha_importacion(v_proyecto_rec->>'fecha_inicio'), fecha_inicio),
+            fecha_limite = COALESCE(public.sanitizar_fecha_importacion(v_proyecto_rec->>'fecha_limite'), fecha_limite),
+            valor_estimado = COALESCE(public.sanitizar_numero_importacion(v_proyecto_rec->>'valor_estimado'), valor_estimado)
           WHERE id = v_proyecto_id;
           v_actualizados := v_actualizados + 1;
         END IF;
@@ -158,17 +214,17 @@ BEGIN
           ) VALUES (
             v_proyecto_id, v_tarea_rec->>'nombre', v_tarea_rec->>'descripcion',
             v_estado_t, v_prioridad_t,
-            NULLIF(v_tarea_rec->>'fecha_inicio', '')::date,
-            NULLIF(v_tarea_rec->>'fecha_limite', '')::date,
-            NULLIF(v_tarea_rec->>'tiempo_estimado_horas', '')::numeric
+            public.sanitizar_fecha_importacion(v_tarea_rec->>'fecha_inicio'),
+            public.sanitizar_fecha_importacion(v_tarea_rec->>'fecha_limite'),
+            public.sanitizar_numero_importacion(v_tarea_rec->>'tiempo_estimado_horas')
           ) RETURNING id INTO v_tarea_id;
           v_creados := v_creados + 1;
         ELSE
           UPDATE tareas SET
             descripcion = COALESCE(v_tarea_rec->>'descripcion', descripcion),
             estado = v_estado_t, prioridad = v_prioridad_t,
-            fecha_limite = COALESCE(NULLIF(v_tarea_rec->>'fecha_limite', '')::date, fecha_limite),
-            tiempo_estimado_horas = COALESCE(NULLIF(v_tarea_rec->>'tiempo_estimado_horas', '')::numeric, tiempo_estimado_horas)
+            fecha_limite = COALESCE(public.sanitizar_fecha_importacion(v_tarea_rec->>'fecha_limite'), fecha_limite),
+            tiempo_estimado_horas = COALESCE(public.sanitizar_numero_importacion(v_tarea_rec->>'tiempo_estimado_horas'), tiempo_estimado_horas)
           WHERE id = v_tarea_id;
           v_actualizados := v_actualizados + 1;
         END IF;
@@ -218,7 +274,7 @@ BEGIN
         VALUES (
           v_proyecto_id, v_reunion_rec->>'nombre', v_tipo_r,
           COALESCE(v_reunion_rec->>'estado', 'programada'),
-          NULLIF(v_reunion_rec->>'fecha', '')::date,
+          public.sanitizar_fecha_importacion(v_reunion_rec->>'fecha'),
           NULLIF(v_reunion_rec->>'hora', '')::time,
           v_reunion_rec->>'notas', v_realizado_por
         ) RETURNING id INTO v_reunion_id;
@@ -270,7 +326,7 @@ BEGIN
         INSERT INTO comunicaciones (proyecto_id, usuario_id, tipo, fecha, resultado, notas)
         VALUES (
           v_proyecto_id, v_usuario_id, v_tipo_c,
-          COALESCE(NULLIF(v_com_rec->>'fecha', '')::date, current_date),
+          COALESCE(public.sanitizar_fecha_importacion(v_com_rec->>'fecha'), current_date),
           v_com_rec->>'resultado', v_com_rec->>'notas'
         );
         v_creados := v_creados + 1;

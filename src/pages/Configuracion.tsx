@@ -291,6 +291,25 @@ function ImportTab() {
   // All relationships use this one normalizer. It intentionally only removes
   // surrounding whitespace and normalizes case; it never guesses a name.
   const normalizeRelation = (value: string) => value.trim().toLocaleLowerCase();
+  const sanitizeNumeric = (value: string | undefined) => {
+    const cleaned = (value ?? '').replace(/[^0-9,.-]/g, '');
+    if (!/[0-9]/.test(cleaned)) return null;
+    const lastComma = cleaned.lastIndexOf(',');
+    const lastDot = cleaned.lastIndexOf('.');
+    const separator = lastComma > lastDot ? ',' : '.';
+    const separatorCount = [...cleaned].filter((character) => character === separator).length;
+    const decimals = separatorCount === 1 ? cleaned.length - cleaned.lastIndexOf(separator) - 1 : 0;
+    let normalized = cleaned;
+    if (lastComma >= 0 && lastDot >= 0) {
+      normalized = separator === ',' ? cleaned.replace(/\./g, '').replace(',', '.') : cleaned.replace(/,/g, '');
+    } else if (separatorCount === 1 && decimals > 0 && decimals <= 2) {
+      normalized = cleaned.replace(separator, '.');
+    } else {
+      normalized = cleaned.replace(/[,.]/g, '');
+    }
+    const number = Number(normalized);
+    return Number.isFinite(number) ? number : null;
+  };
 
   const headerText = (value: unknown) => String(value ?? '').trim();
 
@@ -549,7 +568,7 @@ function ImportTab() {
           nombre: r.data.nombre,
           email: r.data.email,
           rol,
-          tarifa_hora: r.data.tarifa ? Number(r.data.tarifa) : 0,
+          tarifa_hora: sanitizeNumeric(r.data.tarifa) ?? 0,
         });
       } else if (r.hoja === 'Base de datos del proyecto' && r.data.nombre) {
         let cat: string = r.data.categoria?.toLowerCase() ?? 'implementacion';
@@ -570,7 +589,7 @@ function ImportTab() {
           linea_producto: r.data.linea_producto ?? '',
           fecha_inicio: r.data.fecha_inicio ?? '',
           fecha_limite: r.data.fecha_limite ?? '',
-          valor_estimado: r.data.valor_estimado ?? '',
+          valor_estimado: sanitizeNumeric(r.data.valor_estimado),
           cliente: '',
           responsable_email: responsableEmail ?? '',
         });
@@ -578,7 +597,7 @@ function ImportTab() {
         if (r.data.crear_proyecto === 'true' && !importedProjectNames.has(normalizeRelation(r.data.proyecto_nombre))) {
           payload.proyectos.push({
             nombre: r.data.proyecto_nombre.trim(), descripcion: '', categoria: 'implementacion', estado: 'no_iniciado',
-            prioridad: 'media', linea_producto: '', fecha_inicio: '', fecha_limite: '', valor_estimado: '', cliente: '', responsable_email: '',
+            prioridad: 'media', linea_producto: '', fecha_inicio: '', fecha_limite: '', valor_estimado: null, cliente: '', responsable_email: '',
           });
           importedProjectNames.add(normalizeRelation(r.data.proyecto_nombre));
         }
@@ -593,7 +612,7 @@ function ImportTab() {
           prioridad: r.data.prioridad?.toLowerCase() === 'alta' ? 'alta' : r.data.prioridad?.toLowerCase() === 'urgente' ? 'urgente' : 'media',
           fecha_inicio: r.data.fecha_inicio ?? '',
           fecha_limite: r.data.fecha_finalizacion ?? '',
-          tiempo_estimado_horas: r.data.tiempo_horas ?? '',
+          tiempo_estimado_horas: sanitizeNumeric(r.data.tiempo_horas),
           asignados_emails: asignadosEmails,
         });
       } else if (r.hoja === 'Registro de reuniones' && r.data.nombre) {
