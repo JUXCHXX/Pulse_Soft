@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  Settings,
   FileSpreadsheet,
   Upload,
   CheckCircle2,
@@ -8,17 +7,15 @@ import {
   XCircle,
   FileUp,
   Loader2,
-  Plus,
-  Trash2,
   Palette,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import Papa from 'papaparse';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
-import { Badge } from '@/components/Badge';
-import { CATEGORIAS, getRol, ROLES } from '@/lib/constants';
-import type { CategoriaProyecto, PlantillaTarea, Usuario, RolUsuario } from '@/lib/types';
+import { ROLES } from '@/lib/constants';
+import type { Usuario, RolUsuario } from '@/lib/types';
 
 type Step = 'upload' | 'preview' | 'done';
 type RowStatus = 'ok' | 'warning' | 'error';
@@ -36,19 +33,6 @@ export function Configuracion() {
   const { theme, toggleTheme } = useTheme();
   const isPMO = usuario?.rol === 'pmo';
   const [tab, setTab] = useState<'plantillas' | 'datos' | 'preferencias'>('plantillas');
-  const [plantillas, setPlantillas] = useState<PlantillaTarea[]>([]);
-  const [loadingPlantillas, setLoadingPlantillas] = useState(true);
-
-  useEffect(() => {
-    if (tab === 'plantillas') loadPlantillas();
-  }, [tab]);
-
-  async function loadPlantillas() {
-    setLoadingPlantillas(true);
-    const { data } = await supabase.from('plantillas_tareas').select('*').order('categoria, orden');
-    setPlantillas((data as PlantillaTarea[]) ?? []);
-    setLoadingPlantillas(false);
-  }
 
   return (
     <div className="space-y-6">
@@ -81,7 +65,7 @@ export function Configuracion() {
       </div>
 
       {tab === 'plantillas' && (
-        <PlantillasTab plantillas={plantillas} loading={loadingPlantillas} isPMO={isPMO} onReload={loadPlantillas} />
+        <CsvTemplatesTab isPMO={isPMO} />
       )}
       {tab === 'datos' && isPMO && <ImportTab />}
       {tab === 'preferencias' && (
@@ -108,98 +92,206 @@ export function Configuracion() {
   );
 }
 
-function PlantillasTab({
-  plantillas,
-  loading,
-  isPMO,
-  onReload,
-}: {
-  plantillas: PlantillaTarea[];
-  loading: boolean;
-  isPMO: boolean;
-  onReload: () => void;
-}) {
-  const [showNew, setShowNew] = useState(false);
-  const [newTarea, setNewTarea] = useState({ nombre: '', descripcion: '', categoria: 'implementacion' as CategoriaProyecto, orden: 0 });
+type CsvTemplateKey = 'campuspack' | 'schoolpack' | 'language' | 'soporte';
+type CsvTemplateType = 'implementacion' | 'soporte';
 
-  async function addPlantilla() {
-    if (!newTarea.nombre) return;
-    await supabase.from('plantillas_tareas').insert({
-      nombre_tarea: newTarea.nombre,
-      descripcion: newTarea.descripcion || null,
-      categoria: newTarea.categoria,
-      orden: newTarea.orden,
+interface CsvTask {
+  orden: number;
+  tarea: string;
+  tipo_registro: string;
+  proceso_sugerido: string;
+  proyectos_fuente: string;
+  horas_observadas: string;
+  frecuencia_historica: number | null;
+}
+
+interface CsvTemplateConfig {
+  key: CsvTemplateKey;
+  label: string;
+  tipo: CsvTemplateType;
+  producto: string | null;
+}
+
+interface CsvTemplateState {
+  nombre_archivo: string;
+  cargado_en: string;
+  tareas: number;
+}
+
+interface CsvPreview {
+  fileName: string;
+  tasks: CsvTask[];
+  ignored: number;
+  errors: string[];
+}
+
+const CSV_TEMPLATES: CsvTemplateConfig[] = [
+  { key: 'campuspack', label: 'Implementación Campuspack', tipo: 'implementacion', producto: 'Campuspack' },
+  { key: 'schoolpack', label: 'Implementación Schoolpack', tipo: 'implementacion', producto: 'Schoolpack' },
+  { key: 'language', label: 'Implementación Language', tipo: 'implementacion', producto: 'Language' },
+  { key: 'soporte', label: 'Soporte', tipo: 'soporte', producto: null },
+];
+
+const IMPLEMENTATION_HEADERS = ['plantilla', 'producto', 'tipo_registro', 'proceso_sugerido', 'orden', 'tarea', 'proyectos_fuente', 'horas_observadas'];
+const SUPPORT_HEADERS = ['plantilla', 'tipo_registro', 'proceso_sugerido', 'orden', 'tarea', 'proyectos_fuente', 'frecuencia_historica', 'horas_observadas'];
+
+function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
+  const [templates, setTemplates] = useState<Partial<Record<CsvTemplateKey, CsvTemplateState>>>({});
+  const [previews, setPreviews] = useState<Partial<Record<CsvTemplateKey, CsvPreview>>>({});
+  const [saving, setSaving] = useState<CsvTemplateKey | null>(null);
+
+  useEffect(() => {
+    loadTemplates();
+  }, []);
+
+  async function loadTemplates() {
+    const { data } = await supabase.from('plantillas_csv').select('tipo, producto, nombre_archivo, cargado_en, plantillas_csv_tareas(count)');
+    const next: Partial<Record<CsvTemplateKey, CsvTemplateState>> = {};
+    for (const row of (data ?? []) as unknown as Array<{ tipo: CsvTemplateType; producto: string | null; nombre_archivo: string; cargado_en: string; plantillas_csv_tareas: Array<{ count: number }> }>) {
+      const key = row.tipo === 'soporte' ? 'soporte' : row.producto?.toLowerCase() as CsvTemplateKey;
+      if (key) next[key] = { nombre_archivo: row.nombre_archivo, cargado_en: row.cargado_en, tareas: row.plantillas_csv_tareas?.[0]?.count ?? 0 };
+    }
+    setTemplates(next);
+  }
+
+  function parseCsv(config: CsvTemplateConfig, file: File) {
+    Papa.parse<Record<string, string>>(file, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      transformHeader: (header) => header.trim().replace(/^\uFEFF/, ''),
+      complete: (result) => {
+        const headers = (result.meta.fields ?? []).map((header) => header.trim());
+        const expected = config.tipo === 'soporte'
+          ? SUPPORT_HEADERS
+          : config.key === 'language'
+            ? IMPLEMENTATION_HEADERS.filter((header) => header !== 'horas_observadas')
+            : IMPLEMENTATION_HEADERS;
+        const missing = expected.filter((header) => !headers.includes(header));
+        const errors = result.errors.map((error) => `Fila ${error.row ?? '?'}: ${error.message}`);
+        const detectedType = headers.includes('producto') ? 'implementacion' : headers.includes('frecuencia_historica') ? 'soporte' : null;
+        if (detectedType !== config.tipo) errors.unshift('El encabezado no corresponde a esta plantilla.');
+        if (config.key === 'language' && !headers.includes('horas_observadas') && !headers.includes('observacion')) {
+          errors.unshift('Falta la columna "horas_observadas" o "observacion".');
+        }
+        if (missing.length > 0) errors.unshift(`Faltan columnas obligatorias: ${missing.join(', ')}`);
+        if (headers.length === 0) errors.unshift('El archivo está vacío o no tiene encabezado.');
+
+        let ignored = 0;
+        const tasks: CsvTask[] = [];
+        result.data.forEach((row, index) => {
+          const tipoRegistro = (row.tipo_registro ?? '').trim();
+          const tarea = row.tarea ?? '';
+          if (tipoRegistro.toUpperCase() === 'INFO' || tarea.trim() === '') {
+            ignored += 1;
+            return;
+          }
+          const rawOrder = (row.orden ?? '').trim();
+          const order = rawOrder === '' ? index + 1 : Number(rawOrder);
+          if (!Number.isInteger(order)) {
+            errors.push(`Fila ${index + 2}: "orden" debe ser un entero.`);
+            return;
+          }
+          const frequency = (row.frecuencia_historica ?? '').trim();
+          const parsedFrequency = frequency === '' ? null : Number(frequency);
+          if (parsedFrequency !== null && !Number.isInteger(parsedFrequency)) {
+            errors.push(`Fila ${index + 2}: "frecuencia_historica" debe ser un entero.`);
+            return;
+          }
+          tasks.push({
+            orden: order,
+            tarea,
+            tipo_registro: row.tipo_registro ?? '',
+            proceso_sugerido: row.proceso_sugerido ?? '',
+            proyectos_fuente: row.proyectos_fuente ?? '',
+            horas_observadas: row.horas_observadas ?? '',
+            frecuencia_historica: parsedFrequency,
+          });
+        });
+        setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks, ignored, errors } }));
+      },
+      error: (error) => setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks: [], ignored: 0, errors: [error.message] } })),
     });
-    setNewTarea({ nombre: '', descripcion: '', categoria: 'implementacion', orden: 0 });
-    setShowNew(false);
-    onReload();
   }
 
-  async function deletePlantilla(id: string) {
-    await supabase.from('plantillas_tareas').delete().eq('id', id);
-    onReload();
+  async function saveTemplate(config: CsvTemplateConfig) {
+    const preview = previews[config.key];
+    if (!preview || preview.errors.length > 0) return;
+    setSaving(config.key);
+    const { error } = await supabase.rpc('guardar_plantilla_csv', {
+      p_tipo: config.tipo,
+      p_producto: config.producto,
+      p_nombre_archivo: preview.fileName,
+      p_tareas: preview.tasks,
+    });
+    if (!error) {
+      setPreviews((current) => ({ ...current, [config.key]: undefined }));
+      await loadTemplates();
+    } else {
+      setPreviews((current) => ({ ...current, [config.key]: { ...preview, errors: [error.message] } }));
+    }
+    setSaving(null);
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-48">
-        <div className="w-8 h-8 border-3 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
+  if (!isPMO) {
+    return <p className="text-sm text-[var(--text-secondary)]">Las plantillas CSV solo pueden ser administradas por la PMO.</p>;
   }
 
   return (
-    <div className="card p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-[var(--text-secondary)]">Plantillas por categoría</h3>
-        {isPMO && (
-          <button onClick={() => setShowNew(!showNew)} className="btn-primary text-xs flex items-center gap-1 !py-2">
-            <Plus className="w-3.5 h-3.5" /> Nueva
-          </button>
-        )}
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-base font-semibold text-[var(--text-primary)]">Plantillas CSV</h3>
+        <p className="text-sm text-[var(--text-secondary)]">Carga una plantilla por línea de producto. Una nueva carga reemplaza la anterior.</p>
       </div>
-
-      {showNew && isPMO && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4 p-4 rounded-xl bg-[var(--bg-base)]">
-          <input placeholder="Nombre tarea" value={newTarea.nombre} onChange={(e) => setNewTarea({ ...newTarea, nombre: e.target.value })} className="input-field text-sm" />
-          <input placeholder="Descripción" value={newTarea.descripcion} onChange={(e) => setNewTarea({ ...newTarea, descripcion: e.target.value })} className="input-field text-sm" />
-          <select value={newTarea.categoria} onChange={(e) => setNewTarea({ ...newTarea, categoria: e.target.value as CategoriaProyecto })} className="input-field text-sm">
-            {CATEGORIAS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
-          <button onClick={addPlantilla} className="btn-primary text-sm">Agregar</button>
-        </div>
-      )}
-
-      <div className="space-y-4">
-        {CATEGORIAS.map((cat) => (
-          <div key={cat.value}>
-            <h4 className="text-sm font-medium text-[var(--text-primary)] mb-2">{cat.label}</h4>
-            <div className="space-y-1">
-              {plantillas.filter((p) => p.categoria === cat.value).map((p) => (
-                <div key={p.id} className="flex items-center gap-3 p-2.5 rounded-lg bg-[var(--bg-base)]">
-                  <span className="text-xs text-[var(--text-secondary)] w-6">{p.orden}</span>
-                  <span className="text-sm text-[var(--text-primary)] flex-1">{p.nombre_tarea}</span>
-                  {p.descripcion && <span className="text-xs text-[var(--text-secondary)] truncate hidden sm:inline">{p.descripcion}</span>}
-                  {isPMO && (
-                    <button onClick={() => deletePlantilla(p.id)} className="text-[var(--text-secondary)] hover:text-danger transition-colors">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {CSV_TEMPLATES.map((config) => {
+          const current = templates[config.key];
+          const preview = previews[config.key];
+          return (
+            <div key={config.key} className="card p-5 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="font-semibold text-[var(--text-primary)]">{config.label}</h4>
+                  <p className="text-xs text-[var(--text-secondary)] mt-1">
+                    {current ? `${current.tareas} tareas · última carga ${new Date(current.cargado_en).toLocaleDateString('es-MX')}` : 'Sin plantilla cargada'}
+                  </p>
                 </div>
-              ))}
-              {plantillas.filter((p) => p.categoria === cat.value).length === 0 && (
-                <p className="text-xs text-[var(--text-secondary)] py-2">Sin plantillas</p>
+                <FileSpreadsheet className="w-5 h-5 text-caribbean-green shrink-0" />
+              </div>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) parseCsv(config, file);
+                  event.currentTarget.value = '';
+                }}
+                className="block w-full text-sm text-[var(--text-secondary)] file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:opacity-90"
+              />
+              {preview && (
+                <div className="rounded-lg bg-[var(--bg-base)] p-3 text-sm space-y-2">
+                  <p className="font-medium text-[var(--text-primary)]">{preview.fileName}</p>
+                  <p className="text-[var(--text-secondary)]">{preview.tasks.length} tareas válidas · {preview.ignored} filas ignoradas</p>
+                  {preview.tasks.length === 0 && preview.errors.length === 0 && <p className="text-info">Esta plantilla no tiene tareas predefinidas; el proyecto se creará sin tareas iniciales.</p>}
+                  {preview.errors.map((message) => <p key={message} className="text-danger">{message}</p>)}
+                  <button
+                    onClick={() => saveTemplate(config)}
+                    disabled={saving === config.key || preview.errors.length > 0}
+                    className="btn-primary text-sm flex items-center gap-2"
+                  >
+                    {saving === config.key ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                    {current ? 'Reemplazar CSV' : 'Confirmar carga'}
+                  </button>
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
 
 function ImportTab() {
-  const { usuario } = useAuth();
   const [step, setStep] = useState<Step>('upload');
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [fileName, setFileName] = useState('');
@@ -487,7 +579,6 @@ function ImportTab() {
     reader.readAsArrayBuffer(file);
   }
 
-  const isPMO = usuario?.rol === 'pmo';
   const hasErrors = rows.some((r) => r.status === 'error');
   const projectOptions = useMemo(() => [...new Set(
     rows.filter((row) => row.hoja === 'Base de datos del proyecto').map((row) => row.data.nombre)

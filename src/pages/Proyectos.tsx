@@ -1,33 +1,31 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, FolderKanban, Plus, Star } from 'lucide-react';
+import { Search, FolderKanban, Plus, Star } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { Badge, ProgressBar } from '@/components/Badge';
 import {
   getEstadoProyecto,
   getPrioridad,
-  getCategoria,
   ESTADOS_PROYECTO,
   PRIORIDADES,
   CATEGORIAS,
 } from '@/lib/constants';
 import { formatCurrency } from '@/lib/format';
-import type { VwProyectoResumen, Proyecto, CategoriaProyecto, EstadoProyecto, PrioridadNivel } from '@/lib/types';
+import type { VwProyectoResumen, CategoriaProyecto, EstadoProyecto, PrioridadNivel } from '@/lib/types';
 
 export function Proyectos() {
   const { usuario } = useAuth();
   const isPMO = usuario?.rol === 'pmo';
-  const isDireccion = usuario?.rol === 'direccion';
   const canEdit = isPMO;
 
   const [proyectos, setProyectos] = useState<VwProyectoResumen[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterEstado, setFilterEstado] = useState<EstadoProyecto | 'todos'>('todos');
-  const [filterCategoria, setFilterCategoria] = useState<CategoriaProyecto | 'todos'>('todos');
   const [filterPrioridad, setFilterPrioridad] = useState<PrioridadNivel | 'todos'>('todos');
   const [showNew, setShowNew] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     loadProyectos();
@@ -46,9 +44,6 @@ export function Proyectos() {
   const filtered = proyectos.filter((p) => {
     if (search && !p.nombre.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterEstado !== 'todos' && p.estado !== filterEstado) return false;
-    if (filterCategoria !== 'todos') {
-      // vw_proyecto_resumen doesn't include categoria, so we'd need to join. For now, skip.
-    }
     if (filterPrioridad !== 'todos' && p.prioridad !== filterPrioridad) return false;
     return true;
   });
@@ -69,6 +64,11 @@ export function Proyectos() {
           </button>
         )}
       </div>
+      {notice && (
+        <div className="rounded-lg bg-info/10 px-4 py-3 text-sm text-info" role="status">
+          {notice}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="card p-4 flex flex-wrap items-center gap-3">
@@ -174,12 +174,20 @@ export function Proyectos() {
         </div>
       )}
 
-      {showNew && canEdit && <NewProjectModal onClose={() => setShowNew(false)} onCreated={loadProyectos} />}
+      {showNew && canEdit && (
+        <NewProjectModal
+          onClose={() => setShowNew(false)}
+          onCreated={(message) => {
+            setNotice(message);
+            void loadProyectos();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: (message: string) => void }) {
   const { usuario } = useAuth();
   const [form, setForm] = useState({
     nombre: '',
@@ -191,6 +199,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     fecha_limite: '',
     valor_estimado: '',
     cliente: '',
+    producto: '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -207,6 +216,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         categoria: form.categoria,
         estado: form.estado,
         prioridad: form.prioridad,
+        linea_producto: form.categoria === 'implementacion' ? form.producto : null,
         fecha_inicio: form.fecha_inicio || null,
         fecha_limite: form.fecha_limite || null,
         valor_estimado: form.valor_estimado ? Number(form.valor_estimado) : null,
@@ -222,16 +232,20 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       return;
     }
 
-    // Copy template tasks
+    let copiedTasks = 0;
     if (data?.id) {
-      await supabase.rpc('copiar_plantilla_tareas', {
+      const { data: copied, error: copyError } = await supabase.rpc('copiar_plantilla_csv_tareas', {
         p_proyecto_id: data.id,
-        p_categoria: form.categoria,
+        p_tipo: form.categoria,
+        p_producto: form.categoria === 'implementacion' ? form.producto : null,
       });
+      if (!copyError) copiedTasks = Number(copied ?? 0);
     }
 
     setSaving(false);
-    onCreated();
+    onCreated(copiedTasks === 0
+      ? 'Proyecto creado sin tareas iniciales: no hay una plantilla CSV cargada para esta combinación.'
+      : `Proyecto creado con ${copiedTasks} tareas iniciales.`);
     onClose();
   }
 
@@ -264,7 +278,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               <label className="text-sm font-medium text-[var(--text-primary)]">Categoría *</label>
               <select
                 value={form.categoria}
-                onChange={(e) => setForm({ ...form, categoria: e.target.value as CategoriaProyecto })}
+                onChange={(e) => setForm({ ...form, categoria: e.target.value as CategoriaProyecto, producto: '' })}
                 className="input-field mt-1"
               >
                 {CATEGORIAS.map((c) => (
@@ -274,6 +288,22 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                 ))}
               </select>
             </div>
+            {form.categoria === 'implementacion' && (
+              <div>
+                <label className="text-sm font-medium text-[var(--text-primary)]">Producto *</label>
+                <select
+                  required
+                  value={form.producto}
+                  onChange={(e) => setForm({ ...form, producto: e.target.value })}
+                  className="input-field mt-1"
+                >
+                  <option value="">Selecciona un producto</option>
+                  <option value="Campuspack">Campuspack</option>
+                  <option value="Schoolpack">Schoolpack</option>
+                  <option value="Language">Language</option>
+                </select>
+              </div>
+            )}
             <div>
               <label className="text-sm font-medium text-[var(--text-primary)]">Cliente</label>
               <input
