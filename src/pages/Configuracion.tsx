@@ -29,6 +29,7 @@ interface ScheduleActivity {
 }
 interface SchedulePreview { fileName: string; activities: ScheduleActivity[]; structure: Array<{ key: string; name: string; activities: string[] }>; errors: string[] }
 interface MasterRow { id: string; entity: string; data: Record<string, string>; status: ImportStatus; message: string; manuallyCorrected?: boolean }
+interface PendingImport { id: string; entidad: string; source_record_id: string; datos: Record<string, string>; proyecto_nombre: string | null; tarea_nombre: string | null; mensaje: string }
 
 const CSV_TEMPLATES: CsvTemplateConfig[] = [
   { key: 'campuspack', label: 'Implementación Campuspack', tipo: 'implementacion', producto: 'Campuspack' },
@@ -89,6 +90,10 @@ function normalizeImportName(value: string): string {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isPendingMarker(value: string): boolean {
+  return value.toUpperCase().includes('DATO FALTANTE');
 }
 
 function buildProjectLookup(rows: MasterRow[]) {
@@ -153,6 +158,10 @@ function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): 
   }
 
   return '';
+}
+
+function pickRawCsvValue(row: MasterRow, key: string): string {
+  return Object.entries(row.data).find(([header]) => normalizeCsvKey(header) === normalizeCsvKey(key))?.[1]?.trim() ?? '';
 }
 
 function setImportField(row: MasterRow, field: 'project_name' | 'task_name', value: string): MasterRow {
@@ -246,8 +255,16 @@ function MasterCsvImportTab() {
   const [result, setResult] = useState<Record<string, number> | null>(null);
   const [showClean, setShowClean] = useState(false);
   const [cleanText, setCleanText] = useState('');
+  const [pendingImports, setPendingImports] = useState<PendingImport[]>([]);
   const errors = rows.filter((row) => row.status === 'error');
   const counts = rows.reduce<Record<string, number>>((acc, row) => { acc[row.entity] = (acc[row.entity] ?? 0) + 1; return acc; }, {});
+
+  useEffect(() => { void loadPendingImports(); }, []);
+
+  async function loadPendingImports() {
+    const { data } = await supabase.rpc('listar_importaciones_pendientes');
+    setPendingImports((data ?? []) as PendingImport[]);
+  }
 
   function parseMaster(file: File) {
     Papa.parse<Record<string, string>>(file, { header: true, skipEmptyLines: 'greedy', transformHeader: (header) => header.trim().replace(/^\uFEFF/, ''), complete: (parsed) => {
@@ -273,6 +290,7 @@ function MasterCsvImportTab() {
 
     const invalidRows = rows.filter((row) => {
       const entity = normalizeEntity(row.entity);
+      if (Object.values(row.data).some((value) => isPendingMarker(value))) return false;
       if (entity === 'usuario') {
         const email = pickCsvValue(row.data, CSV_FIELD_ALIASES.email);
         const nombre = pickCsvValue(row.data, CSV_FIELD_ALIASES.nombre);
@@ -290,7 +308,7 @@ function MasterCsvImportTab() {
 
         if (!taskName) return true;
         if (!projectName) return true;
-        if (projectResolution.error && !row.manuallyCorrected) return true;
+        if (projectResolution.error && !row.manuallyCorrected && !isPendingMarker(projectName)) return true;
       }
       return false;
     });
@@ -310,7 +328,7 @@ function MasterCsvImportTab() {
           if (!projectName) {
             return { ...row, status: 'error', message: `Falta nombre del proyecto | tarea="${taskName}"` };
           }
-          if (projectResolution.error && !row.manuallyCorrected) {
+          if (projectResolution.error && !row.manuallyCorrected && !isPendingMarker(projectName)) {
             return { ...row, status: 'error', message: `Proyecto no resuelto: ${projectResolution.error}` };
           }
 
@@ -324,50 +342,48 @@ function MasterCsvImportTab() {
     setImporting(true);
     const payload: Record<string, unknown[]> = { usuarios: [], proyectos: [], tareas: [], reuniones: [], comunicaciones: [], roles_proyecto: [], asignaciones_tarea: [], asistentes_reunion: [], registros_tiempo: [] };
     const get = (row: MasterRow, aliases: readonly string[]) => pickCsvValue(row.data, aliases);
+    const source = (row: MasterRow) => ({ source_record_id: pickRawCsvValue(row, 'record_id') || row.id, raw_data: row.data, pending_marker: Object.values(row.data).some((value) => isPendingMarker(value)) });
     for (const row of rows) {
       const entity = normalizeEntity(row.entity);
-      if (entity === 'usuario') payload.usuarios.push({ nombre: get(row, CSV_FIELD_ALIASES.nombre), email: get(row, CSV_FIELD_ALIASES.email), rol: normalizeRole(get(row, CSV_FIELD_ALIASES.rol)), tarifa_hora: get(row, CSV_FIELD_ALIASES.tarifa_hora) || '0' });
-      if (entity === 'proyecto') payload.proyectos.push({ nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), categoria: normalizeCategory(get(row, CSV_FIELD_ALIASES.categoria)), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), linea_producto: get(row, CSV_FIELD_ALIASES.linea_producto), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), valor_estimado: get(row, CSV_FIELD_ALIASES.valor_estimado), cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), template_key: get(row, ['template_key']) });
+      if (entity === 'usuario') payload.usuarios.push({ ...source(row), nombre: get(row, CSV_FIELD_ALIASES.nombre), email: get(row, CSV_FIELD_ALIASES.email), rol: normalizeRole(get(row, CSV_FIELD_ALIASES.rol)), tarifa_hora: get(row, CSV_FIELD_ALIASES.tarifa_hora) || '0' });
+      if (entity === 'proyecto') payload.proyectos.push({ ...source(row), proyecto_id_externo: pickRawCsvValue(row, 'project_id'), nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), categoria: normalizeCategory(get(row, CSV_FIELD_ALIASES.categoria)), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), linea_producto: get(row, CSV_FIELD_ALIASES.linea_producto), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), valor_estimado: get(row, CSV_FIELD_ALIASES.valor_estimado), cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), template_key: get(row, ['template_key']) });
       if (entity === 'tarea') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.tareas.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+        payload.tareas.push({ ...source(row), source_task_id: pickRawCsvValue(row, 'task_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
       }
       if (entity === 'reunion') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.reuniones.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+        payload.reuniones.push({ ...source(row), source_meeting_id: pickRawCsvValue(row, 'meeting_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
       }
       if (entity === 'comunicacion') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.comunicaciones.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+        payload.comunicaciones.push({ ...source(row), source_communication_id: pickRawCsvValue(row, 'communication_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
       }
       if (entity === 'rol_proyecto') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.roles_proyecto.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), tipo_raci: get(row, CSV_FIELD_ALIASES.tipo_raci) || get(row, CSV_FIELD_ALIASES.rol) });
+        payload.roles_proyecto.push({ ...source(row), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), tipo_raci: get(row, CSV_FIELD_ALIASES.tipo_raci) || get(row, CSV_FIELD_ALIASES.rol) });
       }
       if (entity === 'asignacion_tarea') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.asignaciones_tarea.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+        payload.asignaciones_tarea.push({ ...source(row), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
       }
       if (entity === 'asistente_reunion') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.asistentes_reunion.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, reunion_nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+        payload.asistentes_reunion.push({ ...source(row), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, reunion_nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
       }
       if (entity === 'registro_tiempo') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
-        payload.registros_tiempo.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), inicio: get(row, CSV_FIELD_ALIASES.inicio), fin: get(row, CSV_FIELD_ALIASES.fin) });
+        payload.registros_tiempo.push({ ...source(row), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), inicio: get(row, CSV_FIELD_ALIASES.inicio), fin: get(row, CSV_FIELD_ALIASES.fin) });
       }
     }
-    const { data, error } = await supabase.rpc('importar_datos_csv', { p_payload: { ...payload, nombre_archivo: fileName } });
+    const importPayload = { ...payload, nombre_archivo: fileName };
+    const { error: pendingError } = await supabase.rpc('importar_datos_pendientes_csv', { p_payload: importPayload });
+    if (pendingError) { setImporting(false); setRows((current) => [...current, { id: 'pending-error', entity: 'pendientes', data: {}, status: 'error', message: pendingError.message }]); return; }
+    const { data, error } = await supabase.rpc('importar_datos_csv', { p_payload: importPayload });
     setImporting(false);
     if (error) { setRows((current) => [...current, { id: 'import-error', entity: 'importación', data: {}, status: 'error', message: error.message }]); return; }
     setResult(data as Record<string, number>);
+    await loadPendingImports();
   }
 
   function updateImportRow(rowId: string, field: 'project_name' | 'task_name', value: string) {
@@ -384,14 +400,21 @@ function MasterCsvImportTab() {
     }));
   }
 
+  async function updatePendingImport(item: PendingImport, field: 'project_name' | 'task_name', value: string) {
+    const datos = { ...item.datos, [field]: value };
+    const { error } = await supabase.rpc('editar_importacion_pendiente', { p_id: item.id, p_datos: datos });
+    if (!error) await loadPendingImports();
+  }
+
   async function clearDatabase() {
     if (cleanText !== 'LIMPIAR BASE DE DATOS') return;
     const { error } = await supabase.rpc('limpiar_datos_operativos');
-    if (error) setRows([{ id: 'clean-error', entity: 'limpieza', data: {}, status: 'error', message: error.message }]);
+    const { error: pendingError } = error ? { error: null } : await supabase.rpc('limpiar_importaciones_pendientes');
+    if (error || pendingError) setRows([{ id: 'clean-error', entity: 'limpieza', data: {}, status: 'error', message: error?.message ?? pendingError?.message ?? 'No se pudo limpiar la base de datos' }]);
     else { setRows([]); setResult(null); setCleanText(''); setShowClean(false); }
   }
 
-  return <div className="space-y-4"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Importar datos</h3><p className="text-sm text-[var(--text-secondary)]">Selecciona el archivo CSV maestro. Las entidades se resuelven relacionalmente en Supabase; no se aceptan archivos Excel.</p><p className="text-xs text-[var(--text-secondary)] mt-2">Columna obligatoria: <code>entidad</code>. Valores: usuario, proyecto, tarea, rol_proyecto, asignacion_tarea, reunion, asistente_reunion, comunicacion.</p></div><button onClick={() => setShowClean(true)} className="btn-secondary text-sm text-danger flex items-center gap-2 shrink-0"><Trash2 className="w-4 h-4" /> Limpiar base de datos</button></div><div className="card p-8 text-center"><input id="master-csv" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseMaster(file); event.currentTarget.value = ''; }} className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:text-white" /></div>{fileName && <div className="card p-5 space-y-4"><div className="flex items-center justify-between"><div><h4 className="font-semibold text-[var(--text-primary)]">Vista previa: {fileName}</h4><p className="text-sm text-[var(--text-secondary)]">{rows.length} registros · {errors.length} errores</p></div><button onClick={() => void confirmImport()} disabled={errors.length > 0 || importing || !rows.length} className="btn-primary text-sm flex items-center gap-2">{importing && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar importación</button></div><div className="grid grid-cols-2 md:grid-cols-5 gap-2">{Object.entries(counts).map(([entity, count]) => <div key={entity} className="rounded-lg bg-[var(--bg-base)] p-3"><p className="text-lg font-bold text-[var(--text-primary)]">{count}</p><p className="text-xs text-[var(--text-secondary)]">{entity}</p></div>)}</div>{result && <p className="text-sm text-success">Importación completada: {JSON.stringify(result)}</p>}<div className="space-y-2">{rows.filter((row) => row.status === 'error').map((row) => { const isTask = normalizeEntity(row.entity) === 'tarea'; return <div key={row.id} className="rounded-lg border border-red-200 bg-red-50/50 p-3 space-y-2"><p className="text-sm text-danger flex items-center gap-2"><XCircle className="w-4 h-4 shrink-0" /> {row.message}</p>{isTask && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Asignar proyecto<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre)} onChange={(event) => updateImportRow(row.id, 'project_name', event.target.value)} className="input-field mt-1" placeholder="Nombre exacto del proyecto" /></label><label className="text-xs text-[var(--text-secondary)]">Corregir tarea<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre)} onChange={(event) => updateImportRow(row.id, 'task_name', event.target.value)} className="input-field mt-1" placeholder="Nombre de la tarea" /></label></div>}</div>; })}</div>{rows.filter((row) => row.status === 'ok').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-[var(--text-secondary)]"><CheckCircle2 className="w-3 h-3 inline mr-1 text-success" />{row.entity}: {row.data.nombre ?? row.data.activity_name ?? row.message}</p>)}</div>}{showClean && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-danger">Limpiar base de datos</h3><p className="text-sm text-[var(--text-secondary)]">Se eliminarán proyectos, tareas, asignaciones, tiempos, reuniones, comunicaciones, reportes, relaciones RACI e historial de importaciones. Las plantillas, usuarios y configuración permanecerán intactos.</p><p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR BASE DE DATOS</strong> para confirmar.</p><input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR BASE DE DATOS" /><div className="flex justify-end gap-3"><button onClick={() => setShowClean(false)} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void clearDatabase()} disabled={cleanText !== 'LIMPIAR BASE DE DATOS'} className="btn-primary text-sm">Confirmar limpieza</button></div></div></div>}</div>;
+  return <div className="space-y-4"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Importar datos</h3><p className="text-sm text-[var(--text-secondary)]">Selecciona el archivo CSV maestro. Las entidades se resuelven relacionalmente en Supabase; no se aceptan archivos Excel.</p><p className="text-xs text-[var(--text-secondary)] mt-2">Columna obligatoria: <code>entidad</code>. Valores: usuario, proyecto, tarea, rol_proyecto, asignacion_tarea, reunion, asistente_reunion, comunicacion.</p></div><button onClick={() => setShowClean(true)} className="btn-secondary text-sm text-danger flex items-center gap-2 shrink-0"><Trash2 className="w-4 h-4" /> Limpiar base de datos</button></div><div className="card p-8 text-center"><input id="master-csv" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseMaster(file); event.currentTarget.value = ''; }} className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:text-white" /></div>{fileName && <div className="card p-5 space-y-4"><div className="flex items-center justify-between"><div><h4 className="font-semibold text-[var(--text-primary)]">Vista previa: {fileName}</h4><p className="text-sm text-[var(--text-secondary)]">{rows.length} registros · {errors.length} errores</p></div><button onClick={() => void confirmImport()} disabled={errors.length > 0 || importing || !rows.length} className="btn-primary text-sm flex items-center gap-2">{importing && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar importación</button></div><div className="grid grid-cols-2 md:grid-cols-5 gap-2">{Object.entries(counts).map(([entity, count]) => <div key={entity} className="rounded-lg bg-[var(--bg-base)] p-3"><p className="text-lg font-bold text-[var(--text-primary)]">{count}</p><p className="text-xs text-[var(--text-secondary)]">{entity}</p></div>)}</div>{result && <p className="text-sm text-success">Importación completada: {JSON.stringify(result)}</p>}<div className="space-y-2">{rows.filter((row) => row.status === 'error').map((row) => { const isTask = normalizeEntity(row.entity) === 'tarea'; return <div key={row.id} className="rounded-lg border border-red-200 bg-red-50/50 p-3 space-y-2"><p className="text-sm text-danger flex items-center gap-2"><XCircle className="w-4 h-4 shrink-0" /> {row.message}</p>{isTask && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Asignar proyecto<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre)} onChange={(event) => updateImportRow(row.id, 'project_name', event.target.value)} className="input-field mt-1" placeholder="Nombre exacto del proyecto" /></label><label className="text-xs text-[var(--text-secondary)]">Corregir tarea<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre)} onChange={(event) => updateImportRow(row.id, 'task_name', event.target.value)} className="input-field mt-1" placeholder="Nombre de la tarea" /></label></div>}</div>; })}</div>{rows.filter((row) => row.status === 'ok').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-[var(--text-secondary)]"><CheckCircle2 className="w-3 h-3 inline mr-1 text-success" />{row.entity}: {row.data.nombre ?? row.data.activity_name ?? row.message}</p>)}</div>}{pendingImports.length > 0 && <div className="card p-5 space-y-3"><div><h4 className="font-semibold text-[var(--text-primary)]">Datos pendientes de completar</h4><p className="text-xs text-[var(--text-secondary)]">Estos registros se conservaron sin inventar información. La PMO puede corregirlos y volver a importar el CSV maestro.</p></div>{pendingImports.map((item) => <div key={item.id} className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2"><p className="text-xs text-[var(--text-secondary)]">{item.entidad} · {item.source_record_id} · {item.mensaje}</p>{(item.entidad === 'tarea' || item.proyecto_nombre) && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Proyecto<input defaultValue={item.proyecto_nombre ?? ''} onBlur={(event) => void updatePendingImport(item, 'project_name', event.target.value)} className="input-field mt-1" /></label>{item.entidad === 'tarea' && <label className="text-xs text-[var(--text-secondary)]">Tarea<input defaultValue={item.tarea_nombre ?? ''} onBlur={(event) => void updatePendingImport(item, 'task_name', event.target.value)} className="input-field mt-1" /></label>}</div>}</div>)}</div>}{showClean && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-danger">Limpiar base de datos</h3><p className="text-sm text-[var(--text-secondary)]">Se eliminarán proyectos, tareas, asignaciones, tiempos, reuniones, comunicaciones, reportes, relaciones RACI e historial de importaciones. Las plantillas, usuarios y configuración permanecerán intactos.</p><p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR BASE DE DATOS</strong> para confirmar.</p><input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR BASE DE DATOS" /><div className="flex justify-end gap-3"><button onClick={() => setShowClean(false)} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void clearDatabase()} disabled={cleanText !== 'LIMPIAR BASE DE DATOS'} className="btn-primary text-sm">Confirmar limpieza</button></div></div></div>}</div>;
 }
 
 function normalizePriority(value: string | undefined) { const normalized = (value ?? '').trim().toLowerCase(); return ({ baja: 'baja', low: 'baja', media: 'media', medium: 'media', normal: 'media', alta: 'alta', high: 'alta', urgente: 'urgente', urgent: 'urgente' } as Record<string, string>)[normalized] ?? 'media'; }
