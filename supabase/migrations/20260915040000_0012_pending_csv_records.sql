@@ -21,6 +21,25 @@ CREATE INDEX IF NOT EXISTS idx_importaciones_pendientes_estado
 
 ALTER TABLE importaciones_pendientes ENABLE ROW LEVEL SECURITY;
 
+CREATE TABLE IF NOT EXISTS importaciones_registros_maestros (
+  id uuid primary key default gen_random_uuid(),
+  entidad text not null,
+  source_record_id text not null,
+  datos jsonb not null,
+  tiene_pendientes boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (entidad, source_record_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_importaciones_registros_maestros_record
+  ON importaciones_registros_maestros(source_record_id);
+
+ALTER TABLE importaciones_registros_maestros ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE reuniones ALTER COLUMN fecha DROP NOT NULL;
+ALTER TABLE comunicaciones ALTER COLUMN fecha DROP NOT NULL;
+
 CREATE OR REPLACE FUNCTION importar_datos_pendientes_csv(p_payload jsonb)
 RETURNS void AS $$
 DECLARE
@@ -76,13 +95,20 @@ BEGIN
         ELSE 'Relación o dato pendiente de completar desde la interfaz'
       END;
 
+      INSERT INTO importaciones_registros_maestros (entidad, source_record_id, datos, tiene_pendientes, updated_at)
+      VALUES (entity_name, source_record_id, item, marker_found OR relation_missing OR (entity_name = 'tarea' AND (project_name IS NULL OR task_name IS NULL)), now())
+      ON CONFLICT (entidad, source_record_id) DO UPDATE SET
+        datos = EXCLUDED.datos,
+        tiene_pendientes = EXCLUDED.tiene_pendientes,
+        updated_at = now();
+
       IF marker_found OR relation_missing OR (entity_name = 'tarea' AND (project_name IS NULL OR task_name IS NULL)) THEN
         INSERT INTO importaciones_pendientes (
           entidad, source_record_id, datos, proyecto_id_externo, proyecto_nombre,
           tarea_id_externo, tarea_nombre, mensaje, updated_at
         ) VALUES (
           entity_name, source_record_id, item,
-          nullif(item->>'proyecto_id_externo', ''), project_name,
+          nullif(coalesce(item->>'proyecto_id_externo', item->>'project_id'), ''), project_name,
           nullif(item->>'source_task_id', ''), task_name,
           pending_message, now()
         )
@@ -134,5 +160,15 @@ BEGIN
     RAISE EXCEPTION 'Solo la PMO puede limpiar registros pendientes';
   END IF;
   DELETE FROM importaciones_pendientes;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+CREATE OR REPLACE FUNCTION limpiar_registros_maestros()
+RETURNS void AS $$
+BEGIN
+  IF auth_rol() <> 'pmo' THEN
+    RAISE EXCEPTION 'Solo la PMO puede limpiar registros maestros';
+  END IF;
+  DELETE FROM importaciones_registros_maestros;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;

@@ -9,7 +9,7 @@ import { useTheme } from '@/context/ThemeContext';
 type Tab = 'plantillas' | 'datos' | 'preferencias';
 type CsvTemplateKey = 'campuspack' | 'schoolpack' | 'language' | 'soporte';
 type CsvTemplateType = 'implementacion' | 'soporte';
-type ImportStatus = 'ok' | 'warning' | 'error';
+type ImportStatus = 'ok' | 'pending' | 'warning' | 'error';
 
 interface CsvTemplateConfig { key: CsvTemplateKey; label: string; tipo: CsvTemplateType; producto: string | null }
 interface CsvTemplateState { nombre_archivo: string; cargado_en: string; tareas: number; procesos: number }
@@ -96,44 +96,22 @@ function isPendingMarker(value: string): boolean {
   return value.toUpperCase().includes('DATO FALTANTE');
 }
 
-function buildProjectLookup(rows: MasterRow[]) {
-  const projectIdsByName = new Map<string, string>();
-  const duplicateNames = new Set<string>();
-
-  for (const row of rows) {
-    if (normalizeEntity(row.entity) !== 'proyecto') continue;
-    const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
-    const projectId = (row.data.project_id ?? row.data.projectId ?? row.data['project-id'] ?? '').trim();
-    if (!projectName || !projectId) continue;
-    const key = normalizeImportName(projectName);
-    if (projectIdsByName.has(key)) {
-      duplicateNames.add(key);
-      continue;
-    }
-    projectIdsByName.set(key, projectId);
-  }
-
-  return { projectIdsByName, duplicateNames };
+function rowNeedsPendingData(row: MasterRow): boolean {
+  if (Object.values(row.data).some((value) => isPendingMarker(value))) return true;
+  const entity = normalizeEntity(row.entity);
+  if (entity === 'usuario') return !pickCsvValue(row.data, CSV_FIELD_ALIASES.nombre) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.email);
+  if (entity === 'proyecto') return !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_cliente);
+  if (entity === 'tarea') return !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
+  return false;
 }
 
-function resolveProjectId(row: MasterRow, projectIdsByName: Map<string, string>, duplicateNames: Set<string>): { projectId: string; resolvedByName: boolean; error: string | null } {
-  const explicitProjectId = (row.data.project_id ?? row.data.projectId ?? row.data['project-id'] ?? '').trim();
-  if (explicitProjectId) return { projectId: explicitProjectId, resolvedByName: false, error: null };
+function pendingPlaceholder(value: string, field: string, explicitPlaceholder: string): { value: string; pending: boolean } {
+  const trimmed = value.trim();
+  return trimmed ? { value: trimmed, pending: isPendingMarker(trimmed) } : { value: explicitPlaceholder || `DATO PENDIENTE - ${field.toUpperCase()}`, pending: true };
+}
 
-  const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
-  if (!projectName) return { projectId: '', resolvedByName: false, error: 'Falta nombre del proyecto' };
-
-  const normalizedKey = normalizeImportName(projectName);
-  if (duplicateNames.has(normalizedKey)) {
-    return { projectId: '', resolvedByName: false, error: `Proyecto ambiguo: nombre duplicado después de normalizar -> ${projectName}` };
-  }
-
-  const resolvedProjectId = projectIdsByName.get(normalizedKey) ?? '';
-  if (!resolvedProjectId) {
-    return { projectId: '', resolvedByName: false, error: `Proyecto no encontrado por nombre -> ${projectName}` };
-  }
-
-  return { projectId: resolvedProjectId, resolvedByName: true, error: null };
+function pendingDate(value: string): { value: string; pending: boolean } {
+  return value.trim() ? { value: value.trim(), pending: isPendingMarker(value) } : { value: '', pending: true };
 }
 
 function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): string {
@@ -162,10 +140,6 @@ function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): 
 
 function pickRawCsvValue(row: MasterRow, key: string): string {
   return Object.entries(row.data).find(([header]) => normalizeCsvKey(header) === normalizeCsvKey(key))?.[1]?.trim() ?? '';
-}
-
-function setImportField(row: MasterRow, field: 'project_name' | 'task_name', value: string): MasterRow {
-  return { ...row, data: { ...row.data, [field]: value }, manuallyCorrected: true };
 }
 
 export function Configuracion() {
@@ -286,78 +260,72 @@ function MasterCsvImportTab() {
   async function confirmImport() {
     if (errors.length) return;
 
-    const { projectIdsByName, duplicateNames } = buildProjectLookup(rows);
-
-    const invalidRows = rows.filter((row) => {
-      const entity = normalizeEntity(row.entity);
-      if (Object.values(row.data).some((value) => isPendingMarker(value))) return false;
-      if (entity === 'usuario') {
-        const email = pickCsvValue(row.data, CSV_FIELD_ALIASES.email);
-        const nombre = pickCsvValue(row.data, CSV_FIELD_ALIASES.nombre);
-        return !email || !nombre;
-      }
-      if (entity === 'proyecto') {
-        const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
-        const client = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_cliente);
-        return !projectName || !client;
-      }
-      if (entity === 'tarea') {
-        const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
-        const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
-        const projectResolution = resolveProjectId(row, projectIdsByName, duplicateNames);
-
-        if (!taskName) return true;
-        if (!projectName) return true;
-        if (projectResolution.error && !row.manuallyCorrected && !isPendingMarker(projectName)) return true;
-      }
-      return false;
-    });
-
-    if (invalidRows.length > 0) {
-      setRows((current) => current.map((row) => {
-        if (!invalidRows.some((invalidRow) => invalidRow.id === row.id)) return row;
-        const entity = normalizeEntity(row.entity);
-        if (entity === 'tarea') {
-          const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
-          const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
-          const projectResolution = resolveProjectId(row, projectIdsByName, duplicateNames);
-
-          if (!taskName) {
-            return { ...row, status: 'error', message: `Falta nombre de la tarea | proyecto="${projectName || 'vacío'}" | tarea="vacío"` };
-          }
-          if (!projectName) {
-            return { ...row, status: 'error', message: `Falta nombre del proyecto | tarea="${taskName}"` };
-          }
-          if (projectResolution.error && !row.manuallyCorrected && !isPendingMarker(projectName)) {
-            return { ...row, status: 'error', message: `Proyecto no resuelto: ${projectResolution.error}` };
-          }
-
-          return { ...row, status: 'ok', message: row.manuallyCorrected ? `Corrección lista: proyecto asignado a ${projectName}` : `Proyecto resuelto por nombre: ${projectName}` };
-        }
-        return { ...row, status: 'error', message: 'Falta nombre del proyecto o nombre de la tarea' };
-      }));
-      return;
-    }
-
+    const pendingRows = rows.filter(rowNeedsPendingData);
+    setRows((current) => current.map((row) => rowNeedsPendingData(row) ? { ...row, status: 'pending', message: 'Pendiente de completar' } : row));
     setImporting(true);
     const payload: Record<string, unknown[]> = { usuarios: [], proyectos: [], tareas: [], reuniones: [], comunicaciones: [], roles_proyecto: [], asignaciones_tarea: [], asistentes_reunion: [], registros_tiempo: [] };
     const get = (row: MasterRow, aliases: readonly string[]) => pickCsvValue(row.data, aliases);
-    const source = (row: MasterRow) => ({ source_record_id: pickRawCsvValue(row, 'record_id') || row.id, raw_data: row.data, pending_marker: Object.values(row.data).some((value) => isPendingMarker(value)) });
+    const source = (row: MasterRow, pendingFields: Record<string, string> = {}) => ({ source_record_id: pickRawCsvValue(row, 'record_id') || row.id, raw_data: row.data, pending_fields: pendingFields, pending_marker: Object.values(row.data).some((value) => isPendingMarker(value)) || Object.keys(pendingFields).length > 0 });
+    const projectPayloadNames = new Set<string>();
+    const projectClientsByName = new Map<string, string>();
+    const projectNamesByExternalId = new Map<string, string>();
+    for (const projectRow of rows) {
+      if (normalizeEntity(projectRow.entity) !== 'proyecto') continue;
+      const projectName = get(projectRow, CSV_FIELD_ALIASES.proyecto_nombre);
+      const externalProjectId = pickRawCsvValue(projectRow, 'project_id');
+      if (projectName) {
+        projectClientsByName.set(normalizeImportName(projectName), get(projectRow, CSV_FIELD_ALIASES.proyecto_cliente));
+        if (externalProjectId) projectNamesByExternalId.set(externalProjectId, projectName);
+      }
+    }
+    const ensureProject = (projectName: { value: string; pending: boolean }, client: { value: string; pending: boolean }) => {
+      const key = normalizeImportName(projectName.value);
+      if (projectPayloadNames.has(key)) return;
+      payload.proyectos.push({ source_record_id: `generated-project-${key}`, pending_marker: projectName.pending || client.pending, pending_fields: projectName.pending || client.pending ? { nombre: projectName.value, cliente: client.value } : {}, proyecto_id_externo: '', nombre: projectName.value, descripcion: '', categoria: 'implementacion', estado: 'no_iniciado', prioridad: 'media', linea_producto: '', fecha_inicio: '', fecha_limite: '', valor_estimado: '', cliente: client.value, template_key: '' });
+      projectPayloadNames.add(key);
+    };
     for (const row of rows) {
       const entity = normalizeEntity(row.entity);
-      if (entity === 'usuario') payload.usuarios.push({ ...source(row), nombre: get(row, CSV_FIELD_ALIASES.nombre), email: get(row, CSV_FIELD_ALIASES.email), rol: normalizeRole(get(row, CSV_FIELD_ALIASES.rol)), tarifa_hora: get(row, CSV_FIELD_ALIASES.tarifa_hora) || '0' });
-      if (entity === 'proyecto') payload.proyectos.push({ ...source(row), proyecto_id_externo: pickRawCsvValue(row, 'project_id'), nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), categoria: normalizeCategory(get(row, CSV_FIELD_ALIASES.categoria)), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), linea_producto: get(row, CSV_FIELD_ALIASES.linea_producto), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), valor_estimado: get(row, CSV_FIELD_ALIASES.valor_estimado), cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), template_key: get(row, ['template_key']) });
+      if (entity === 'usuario') {
+        const nombre = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.nombre), 'nombre', 'USUARIO PENDIENTE - FALTA NOMBRE');
+        const sourceId = pickRawCsvValue(row, 'record_id') || row.id;
+        const email = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.email), 'email', `usuario-pendiente-${sourceId}@pendiente.local`);
+        payload.usuarios.push({ ...source(row, { nombre: nombre.pending ? nombre.value : '', email: email.pending ? email.value : '' }), nombre: nombre.value, email: email.value, rol: normalizeRole(get(row, CSV_FIELD_ALIASES.rol)), tarifa_hora: get(row, CSV_FIELD_ALIASES.tarifa_hora) || '0' });
+      }
+      if (entity === 'proyecto') {
+        const nombre = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_nombre), 'nombre', 'PROYECTO PENDIENTE - FALTA NOMBRE');
+        const cliente = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_cliente), 'cliente', 'CLIENTE PENDIENTE');
+        const fechaInicio = pendingDate(get(row, CSV_FIELD_ALIASES.fecha_inicio));
+        const fechaLimite = pendingDate(get(row, CSV_FIELD_ALIASES.fecha_limite));
+        payload.proyectos.push({ ...source(row, { ...(nombre.pending ? { nombre: nombre.value } : {}), ...(cliente.pending ? { cliente: cliente.value } : {}), ...(fechaInicio.pending ? { fecha_inicio: 'FECHA PENDIENTE' } : {}), ...(fechaLimite.pending ? { fecha_limite: 'FECHA PENDIENTE' } : {}) }), proyecto_id_externo: pickRawCsvValue(row, 'project_id'), nombre: nombre.value, descripcion: get(row, CSV_FIELD_ALIASES.descripcion), categoria: normalizeCategory(get(row, CSV_FIELD_ALIASES.categoria)), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), linea_producto: get(row, CSV_FIELD_ALIASES.linea_producto), fecha_inicio: fechaInicio.value, fecha_limite: fechaLimite.value, valor_estimado: get(row, CSV_FIELD_ALIASES.valor_estimado), cliente: cliente.value, template_key: get(row, ['template_key']) });
+        projectPayloadNames.add(normalizeImportName(nombre.value));
+      }
       if (entity === 'tarea') {
-        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        payload.tareas.push({ ...source(row), source_task_id: pickRawCsvValue(row, 'task_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+        const externalProjectId = pickRawCsvValue(row, 'project_id');
+        const projectName = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_nombre) || projectNamesByExternalId.get(externalProjectId) || '', 'proyecto_nombre', 'PROYECTO PENDIENTE - FALTA NOMBRE');
+        const taskName = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.tarea_nombre), 'tarea_nombre', 'TAREA PENDIENTE - FALTA NOMBRE');
+        const client = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_cliente) || projectClientsByName.get(normalizeImportName(projectName.value)) || '', 'cliente', 'CLIENTE PENDIENTE');
+        const startDate = pendingDate(get(row, CSV_FIELD_ALIASES.fecha_inicio));
+        const dueDate = pendingDate(get(row, CSV_FIELD_ALIASES.fecha_limite));
+        ensureProject(projectName, client);
+        payload.tareas.push({ ...source(row, { ...(projectName.pending ? { proyecto_nombre: projectName.value } : {}), ...(taskName.pending ? { tarea_nombre: taskName.value } : {}), ...(client.pending ? { cliente: client.value } : {}), ...(startDate.pending ? { fecha_inicio: 'FECHA PENDIENTE' } : {}), ...(dueDate.pending ? { fecha_limite: 'FECHA PENDIENTE' } : {}) }), source_task_id: pickRawCsvValue(row, 'task_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName.value, proyecto_cliente: client.value, nombre: taskName.value, descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: startDate.value, fecha_limite: dueDate.value, tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
       }
       if (entity === 'reunion') {
-        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        payload.reuniones.push({ ...source(row), source_meeting_id: pickRawCsvValue(row, 'meeting_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+        const externalProjectId = pickRawCsvValue(row, 'project_id');
+        const projectName = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_nombre) || projectNamesByExternalId.get(externalProjectId) || '', 'proyecto_nombre', 'PROYECTO PENDIENTE - FALTA NOMBRE');
+        const meetingName = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.reunion_nombre), 'reunion_nombre', 'REUNIÓN PENDIENTE - FALTA NOMBRE');
+        const client = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_cliente) || projectClientsByName.get(normalizeImportName(projectName.value)) || '', 'cliente', 'CLIENTE PENDIENTE');
+        const meetingDate = pendingDate(get(row, CSV_FIELD_ALIASES.fecha_inicio));
+        ensureProject(projectName, client);
+        payload.reuniones.push({ ...source(row, { ...(projectName.pending ? { proyecto_nombre: projectName.value } : {}), ...(meetingName.pending ? { reunion_nombre: meetingName.value } : {}), ...(client.pending ? { cliente: client.value } : {}), ...(meetingDate.pending ? { fecha: 'FECHA PENDIENTE' } : {}) }), source_meeting_id: pickRawCsvValue(row, 'meeting_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName.value, proyecto_cliente: client.value, nombre: meetingName.value, tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: meetingDate.value, hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
       }
       if (entity === 'comunicacion') {
-        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
-        payload.comunicaciones.push({ ...source(row), source_communication_id: pickRawCsvValue(row, 'communication_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+        const externalProjectId = pickRawCsvValue(row, 'project_id');
+        const projectName = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_nombre) || projectNamesByExternalId.get(externalProjectId) || '', 'proyecto_nombre', 'PROYECTO PENDIENTE - FALTA NOMBRE');
+        const client = pendingPlaceholder(get(row, CSV_FIELD_ALIASES.proyecto_cliente) || projectClientsByName.get(normalizeImportName(projectName.value)) || '', 'cliente', 'CLIENTE PENDIENTE');
+        const communicationDate = pendingDate(get(row, CSV_FIELD_ALIASES.fecha_inicio));
+        ensureProject(projectName, client);
+        payload.comunicaciones.push({ ...source(row, { ...(projectName.pending ? { proyecto_nombre: projectName.value } : {}), ...(client.pending ? { cliente: client.value } : {}), ...(communicationDate.pending ? { fecha: 'FECHA PENDIENTE' } : {}) }), source_communication_id: pickRawCsvValue(row, 'communication_id'), proyecto_id: null, proyecto_id_externo: pickRawCsvValue(row, 'project_id'), proyecto_nombre: projectName.value, proyecto_cliente: client.value, tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: communicationDate.value, resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
       }
       if (entity === 'rol_proyecto') {
         const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
@@ -382,22 +350,14 @@ function MasterCsvImportTab() {
     const { data, error } = await supabase.rpc('importar_datos_csv', { p_payload: importPayload });
     setImporting(false);
     if (error) { setRows((current) => [...current, { id: 'import-error', entity: 'importación', data: {}, status: 'error', message: error.message }]); return; }
-    setResult(data as Record<string, number>);
+    setResult({
+      registros_importados: rows.length,
+      registros_completos: rows.length - pendingRows.length,
+      registros_pendientes: pendingRows.length,
+      registros_descartados_por_campos_faltantes: 0,
+      ...(data as Record<string, number>),
+    });
     await loadPendingImports();
-  }
-
-  function updateImportRow(rowId: string, field: 'project_name' | 'task_name', value: string) {
-    setRows((current) => current.map((row) => {
-      if (row.id !== rowId) return row;
-      const updated = setImportField(row, field, value);
-      const projectName = pickCsvValue(updated.data, CSV_FIELD_ALIASES.proyecto_nombre);
-      const taskName = pickCsvValue(updated.data, CSV_FIELD_ALIASES.tarea_nombre);
-      if (normalizeEntity(updated.entity) !== 'tarea') return updated;
-      if (!projectName && !taskName) return { ...updated, status: 'error', message: 'Falta nombre del proyecto y nombre de la tarea' };
-      if (!projectName) return { ...updated, status: 'error', message: 'Falta nombre del proyecto' };
-      if (!taskName) return { ...updated, status: 'error', message: 'Falta nombre de la tarea' };
-      return { ...updated, status: 'ok', message: 'Corrección lista para importar' };
-    }));
   }
 
   async function updatePendingImport(item: PendingImport, field: 'project_name' | 'task_name', value: string) {
@@ -410,11 +370,12 @@ function MasterCsvImportTab() {
     if (cleanText !== 'LIMPIAR BASE DE DATOS') return;
     const { error } = await supabase.rpc('limpiar_datos_operativos');
     const { error: pendingError } = error ? { error: null } : await supabase.rpc('limpiar_importaciones_pendientes');
-    if (error || pendingError) setRows([{ id: 'clean-error', entity: 'limpieza', data: {}, status: 'error', message: error?.message ?? pendingError?.message ?? 'No se pudo limpiar la base de datos' }]);
+    const { error: masterError } = error || pendingError ? { error: null } : await supabase.rpc('limpiar_registros_maestros');
+    if (error || pendingError || masterError) setRows([{ id: 'clean-error', entity: 'limpieza', data: {}, status: 'error', message: error?.message ?? pendingError?.message ?? masterError?.message ?? 'No se pudo limpiar la base de datos' }]);
     else { setRows([]); setResult(null); setCleanText(''); setShowClean(false); }
   }
 
-  return <div className="space-y-4"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Importar datos</h3><p className="text-sm text-[var(--text-secondary)]">Selecciona el archivo CSV maestro. Las entidades se resuelven relacionalmente en Supabase; no se aceptan archivos Excel.</p><p className="text-xs text-[var(--text-secondary)] mt-2">Columna obligatoria: <code>entidad</code>. Valores: usuario, proyecto, tarea, rol_proyecto, asignacion_tarea, reunion, asistente_reunion, comunicacion.</p></div><button onClick={() => setShowClean(true)} className="btn-secondary text-sm text-danger flex items-center gap-2 shrink-0"><Trash2 className="w-4 h-4" /> Limpiar base de datos</button></div><div className="card p-8 text-center"><input id="master-csv" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseMaster(file); event.currentTarget.value = ''; }} className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:text-white" /></div>{fileName && <div className="card p-5 space-y-4"><div className="flex items-center justify-between"><div><h4 className="font-semibold text-[var(--text-primary)]">Vista previa: {fileName}</h4><p className="text-sm text-[var(--text-secondary)]">{rows.length} registros · {errors.length} errores</p></div><button onClick={() => void confirmImport()} disabled={errors.length > 0 || importing || !rows.length} className="btn-primary text-sm flex items-center gap-2">{importing && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar importación</button></div><div className="grid grid-cols-2 md:grid-cols-5 gap-2">{Object.entries(counts).map(([entity, count]) => <div key={entity} className="rounded-lg bg-[var(--bg-base)] p-3"><p className="text-lg font-bold text-[var(--text-primary)]">{count}</p><p className="text-xs text-[var(--text-secondary)]">{entity}</p></div>)}</div>{result && <p className="text-sm text-success">Importación completada: {JSON.stringify(result)}</p>}<div className="space-y-2">{rows.filter((row) => row.status === 'error').map((row) => { const isTask = normalizeEntity(row.entity) === 'tarea'; return <div key={row.id} className="rounded-lg border border-red-200 bg-red-50/50 p-3 space-y-2"><p className="text-sm text-danger flex items-center gap-2"><XCircle className="w-4 h-4 shrink-0" /> {row.message}</p>{isTask && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Asignar proyecto<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre)} onChange={(event) => updateImportRow(row.id, 'project_name', event.target.value)} className="input-field mt-1" placeholder="Nombre exacto del proyecto" /></label><label className="text-xs text-[var(--text-secondary)]">Corregir tarea<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre)} onChange={(event) => updateImportRow(row.id, 'task_name', event.target.value)} className="input-field mt-1" placeholder="Nombre de la tarea" /></label></div>}</div>; })}</div>{rows.filter((row) => row.status === 'ok').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-[var(--text-secondary)]"><CheckCircle2 className="w-3 h-3 inline mr-1 text-success" />{row.entity}: {row.data.nombre ?? row.data.activity_name ?? row.message}</p>)}</div>}{pendingImports.length > 0 && <div className="card p-5 space-y-3"><div><h4 className="font-semibold text-[var(--text-primary)]">Datos pendientes de completar</h4><p className="text-xs text-[var(--text-secondary)]">Estos registros se conservaron sin inventar información. La PMO puede corregirlos y volver a importar el CSV maestro.</p></div>{pendingImports.map((item) => <div key={item.id} className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2"><p className="text-xs text-[var(--text-secondary)]">{item.entidad} · {item.source_record_id} · {item.mensaje}</p>{(item.entidad === 'tarea' || item.proyecto_nombre) && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Proyecto<input defaultValue={item.proyecto_nombre ?? ''} onBlur={(event) => void updatePendingImport(item, 'project_name', event.target.value)} className="input-field mt-1" /></label>{item.entidad === 'tarea' && <label className="text-xs text-[var(--text-secondary)]">Tarea<input defaultValue={item.tarea_nombre ?? ''} onBlur={(event) => void updatePendingImport(item, 'task_name', event.target.value)} className="input-field mt-1" /></label>}</div>}</div>)}</div>}{showClean && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-danger">Limpiar base de datos</h3><p className="text-sm text-[var(--text-secondary)]">Se eliminarán proyectos, tareas, asignaciones, tiempos, reuniones, comunicaciones, reportes, relaciones RACI e historial de importaciones. Las plantillas, usuarios y configuración permanecerán intactos.</p><p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR BASE DE DATOS</strong> para confirmar.</p><input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR BASE DE DATOS" /><div className="flex justify-end gap-3"><button onClick={() => setShowClean(false)} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void clearDatabase()} disabled={cleanText !== 'LIMPIAR BASE DE DATOS'} className="btn-primary text-sm">Confirmar limpieza</button></div></div></div>}</div>;
+  return <div className="space-y-4"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Importar datos</h3><p className="text-sm text-[var(--text-secondary)]">Selecciona el archivo CSV maestro. Los faltantes se convierten en placeholders editables; no se descartan registros.</p><p className="text-xs text-[var(--text-secondary)] mt-2">Columna obligatoria: <code>entidad</code>. Valores: usuario, proyecto, tarea, rol_proyecto, asignacion_tarea, reunion, asistente_reunion, comunicacion.</p></div><button onClick={() => setShowClean(true)} className="btn-secondary text-sm text-danger flex items-center gap-2 shrink-0"><Trash2 className="w-4 h-4" /> Limpiar base de datos</button></div><div className="card p-8 text-center"><input id="master-csv" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseMaster(file); event.currentTarget.value = ''; }} className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:text-white" /></div>{fileName && <div className="card p-5 space-y-4"><div className="flex items-center justify-between"><div><h4 className="font-semibold text-[var(--text-primary)]">Vista previa: {fileName}</h4><p className="text-sm text-[var(--text-secondary)]">{rows.length} registros · {errors.length} errores estructurales</p></div><button onClick={() => void confirmImport()} disabled={errors.length > 0 || importing || !rows.length} className="btn-primary text-sm flex items-center gap-2">{importing && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar importación</button></div><div className="grid grid-cols-2 md:grid-cols-5 gap-2">{Object.entries(counts).map(([entity, count]) => <div key={entity} className="rounded-lg bg-[var(--bg-base)] p-3"><p className="text-lg font-bold text-[var(--text-primary)]">{count}</p><p className="text-xs text-[var(--text-secondary)]">{entity}</p></div>)}</div>{result && <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 text-sm text-[var(--text-primary)]"><p className="font-semibold text-success">{result.registros_importados} registros importados</p><p>{result.registros_completos} registros completos</p><p>{result.registros_pendientes} registros con datos pendientes</p><p>{result.registros_descartados_por_campos_faltantes} registros descartados por campos faltantes</p></div>}<div className="space-y-2">{rows.filter((row) => row.status === 'error').map((row) => <div key={row.id} className="rounded-lg border border-red-200 bg-red-50/50 p-3"><p className="text-sm text-danger flex items-center gap-2"><XCircle className="w-4 h-4 shrink-0" /> {row.message}</p></div>)}{rows.filter((row) => row.status === 'pending').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-amber-700"><span className="mr-1">Pendiente de completar</span> · {row.entity}: {row.message}</p>)}{rows.filter((row) => row.status === 'ok').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-[var(--text-secondary)]"><CheckCircle2 className="w-3 h-3 inline mr-1 text-success" />{row.entity}: {row.data.nombre ?? row.data.activity_name ?? row.message}</p>)}</div></div>}{pendingImports.length > 0 && <div className="card p-5 space-y-3"><div><h4 className="font-semibold text-[var(--text-primary)]">Datos pendientes de completar</h4><p className="text-xs text-[var(--text-secondary)]">Estos registros se conservaron sin inventar información. La PMO puede corregirlos desde aquí.</p></div>{pendingImports.map((item) => <div key={item.id} className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2"><p className="text-xs text-[var(--text-secondary)]">Pendiente de completar · {item.entidad} · {item.source_record_id} · {item.mensaje}</p>{(item.entidad === 'tarea' || item.proyecto_nombre) && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Proyecto<input defaultValue={item.proyecto_nombre ?? ''} onBlur={(event) => void updatePendingImport(item, 'project_name', event.target.value)} className="input-field mt-1" /></label>{item.entidad === 'tarea' && <label className="text-xs text-[var(--text-secondary)]">Tarea<input defaultValue={item.tarea_nombre ?? ''} onBlur={(event) => void updatePendingImport(item, 'task_name', event.target.value)} className="input-field mt-1" /></label>}</div>}</div>)}</div>}{showClean && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-danger">Limpiar base de datos</h3><p className="text-sm text-[var(--text-secondary)]">Se eliminarán proyectos, tareas, asignaciones, tiempos, reuniones, comunicaciones, reportes, relaciones RACI e historial de importaciones. Las plantillas, usuarios y configuración permanecerán intactos.</p><p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR BASE DE DATOS</strong> para confirmar.</p><input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR BASE DE DATOS" /><div className="flex justify-end gap-3"><button onClick={() => setShowClean(false)} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void clearDatabase()} disabled={cleanText !== 'LIMPIAR BASE DE DATOS'} className="btn-primary text-sm">Confirmar limpieza</button></div></div></div>}</div>;
 }
 
 function normalizePriority(value: string | undefined) { const normalized = (value ?? '').trim().toLowerCase(); return ({ baja: 'baja', low: 'baja', media: 'media', medium: 'media', normal: 'media', alta: 'alta', high: 'alta', urgente: 'urgente', urgent: 'urgente' } as Record<string, string>)[normalized] ?? 'media'; }
