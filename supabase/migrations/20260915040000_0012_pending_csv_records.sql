@@ -45,7 +45,7 @@ RETURNS void AS $$
 DECLARE
   group_name text;
   item jsonb;
-  source_record_id text;
+  v_source_record_id text;
   entity_name text;
   marker_found boolean;
   project_name text;
@@ -70,8 +70,8 @@ BEGIN
         WHEN 'asistentes_reunion' THEN 'asistente_reunion'
         ELSE 'registro_tiempo'
       END;
-      source_record_id := nullif(trim(coalesce(item->>'source_record_id', '')), '');
-      IF source_record_id IS NULL THEN CONTINUE; END IF;
+      v_source_record_id := nullif(trim(coalesce(item->>'source_record_id', '')), '');
+      IF v_source_record_id IS NULL THEN CONTINUE; END IF;
 
       SELECT bool_or(upper(value) LIKE '%DATO FALTANTE%') INTO marker_found
       FROM jsonb_each_text(item);
@@ -95,19 +95,19 @@ BEGIN
         ELSE 'Relación o dato pendiente de completar desde la interfaz'
       END;
 
-      INSERT INTO importaciones_registros_maestros (entidad, source_record_id, datos, tiene_pendientes, updated_at)
-      VALUES (entity_name, source_record_id, item, marker_found OR relation_missing OR (entity_name = 'tarea' AND (project_name IS NULL OR task_name IS NULL)), now())
+      INSERT INTO importaciones_registros_maestros AS maestro (entidad, source_record_id, datos, tiene_pendientes, updated_at)
+      VALUES (entity_name, v_source_record_id, item, marker_found OR relation_missing OR (entity_name = 'tarea' AND (project_name IS NULL OR task_name IS NULL)), now())
       ON CONFLICT (entidad, source_record_id) DO UPDATE SET
         datos = EXCLUDED.datos,
         tiene_pendientes = EXCLUDED.tiene_pendientes,
         updated_at = now();
 
       IF marker_found OR relation_missing OR (entity_name = 'tarea' AND (project_name IS NULL OR task_name IS NULL)) THEN
-        INSERT INTO importaciones_pendientes (
+        INSERT INTO importaciones_pendientes AS pendiente (
           entidad, source_record_id, datos, proyecto_id_externo, proyecto_nombre,
           tarea_id_externo, tarea_nombre, mensaje, updated_at
         ) VALUES (
-          entity_name, source_record_id, item,
+          entity_name, v_source_record_id, item,
           nullif(coalesce(item->>'proyecto_id_externo', item->>'project_id'), ''), project_name,
           nullif(item->>'source_task_id', ''), task_name,
           pending_message, now()
@@ -133,7 +133,11 @@ BEGIN
   IF auth_rol() <> 'pmo' THEN
     RAISE EXCEPTION 'Solo la PMO puede consultar registros pendientes';
   END IF;
-  RETURN QUERY SELECT * FROM importaciones_pendientes WHERE estado = 'pendiente' ORDER BY created_at, entidad, source_record_id;
+  RETURN QUERY
+  SELECT pendiente.*
+  FROM importaciones_pendientes AS pendiente
+  WHERE pendiente.estado = 'pendiente'
+  ORDER BY pendiente.created_at, pendiente.entidad, pendiente.source_record_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
