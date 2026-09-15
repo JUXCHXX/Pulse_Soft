@@ -129,6 +129,16 @@ BEGIN
     FOR v_usuario_rec IN SELECT value FROM jsonb_array_elements(payload->'usuarios') AS elements(value)
     LOOP
       BEGIN
+        IF NULLIF(trim(COALESCE(v_usuario_rec->>'nombre', '')), '') IS NULL
+           OR NULLIF(trim(COALESCE(v_usuario_rec->>'email', '')), '') IS NULL THEN
+          v_omitidos := v_omitidos + 1;
+          v_errores := v_errores || jsonb_build_object(
+            'tabla', 'usuarios', 'bloque', 'usuarios', 'email', v_usuario_rec->>'email',
+            'error', 'Error insertando en usuarios: nombre o email vacíos'
+          );
+          CONTINUE;
+        END IF;
+
         SELECT id INTO v_usuario_id FROM usuarios WHERE email = v_usuario_rec->>'email';
         IF v_usuario_id IS NULL THEN
           v_usuario_id := crear_usuario_auth_interno(
@@ -159,6 +169,16 @@ BEGIN
     FOR v_proyecto_rec IN SELECT value FROM jsonb_array_elements(payload->'proyectos') AS elements(value)
     LOOP
       BEGIN
+        IF NULLIF(trim(COALESCE(v_proyecto_rec->>'nombre', '')), '') IS NULL
+           OR NULLIF(trim(COALESCE(v_proyecto_rec->>'cliente', '')), '') IS NULL THEN
+          v_omitidos := v_omitidos + 1;
+          v_errores := v_errores || jsonb_build_object(
+            'tabla', 'proyectos', 'bloque', 'proyectos', 'nombre', v_proyecto_rec->>'nombre',
+            'error', 'Error insertando en proyectos: nombre o cliente vacíos'
+          );
+          CONTINUE;
+        END IF;
+
         v_categoria := COALESCE((v_proyecto_rec->>'categoria')::categoria_proyecto, 'implementacion');
         v_estado := COALESCE((v_proyecto_rec->>'estado')::estado_proyecto, 'no_iniciado');
         v_prioridad := COALESCE((v_proyecto_rec->>'prioridad')::prioridad_nivel, 'media');
@@ -214,6 +234,16 @@ BEGIN
     FOR v_tarea_rec IN SELECT value FROM jsonb_array_elements(payload->'tareas') AS elements(value)
     LOOP
       BEGIN
+        IF NULLIF(trim(COALESCE(v_tarea_rec->>'nombre', '')), '') IS NULL
+           OR NULLIF(trim(COALESCE(v_tarea_rec->>'proyecto_nombre', '')), '') IS NULL THEN
+          v_omitidos := v_omitidos + 1;
+          v_errores := v_errores || jsonb_build_object(
+            'tabla', 'tareas', 'bloque', 'tareas', 'nombre', v_tarea_rec->>'nombre',
+            'error', 'Error insertando en tareas: nombre o proyecto vacíos'
+          );
+          CONTINUE;
+        END IF;
+
         v_estado_t := COALESCE((v_tarea_rec->>'estado')::estado_tarea, 'no_iniciado');
         v_prioridad_t := COALESCE((v_tarea_rec->>'prioridad')::prioridad_nivel, 'media');
 

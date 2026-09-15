@@ -3,7 +3,12 @@
 
 The auth.users table doesn't have a default UUID in some Supabase versions,
 so we need to generate one explicitly with gen_random_uuid().
+
+Also, the legacy password helpers rely on pgcrypto; ensure the extension is
+enabled before calling gen_salt() or crypt().
 */
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Drop and recreate both functions
 DROP FUNCTION IF EXISTS crear_usuario_auth(text, text, text, text, numeric);

@@ -39,10 +39,47 @@ const CSV_TEMPLATES: CsvTemplateConfig[] = [
 
 const TEMPLATE_REQUIRED = ['template_key', 'process_key', 'process_name', 'activity_key', 'activity_name'];
 const MASTER_ENTITIES = [...IMPORT_ENTITY_VALUES];
+const CSV_FIELD_ALIASES = {
+  nombre: ['nombre', 'full_name', 'nombre_usuario', 'usuario_nombre'],
+  email: ['email', 'correo', 'usuario_email', 'email_usuario'],
+  rol: ['rol', 'role', 'cargo'],
+  tarifa_hora: ['tarifa_hora', 'tarifa', 'hourly_rate'],
+  proyecto_nombre: ['proyecto_nombre', 'project_name', 'nombre_proyecto', 'proyecto', 'project'],
+  proyecto_cliente: ['proyecto_cliente', 'project_client', 'cliente_proyecto', 'cliente'],
+  tarea_nombre: ['tarea_nombre', 'task_name', 'nombre_tarea', 'tarea', 'task', 'activity_name'],
+  reunion_nombre: ['reunion_nombre', 'meeting_name', 'nombre_reunion', 'reunion'],
+  usuario_email: ['usuario_email', 'user_email', 'email_usuario', 'email'],
+  tipo_raci: ['tipo_raci', 'raci', 'rol'],
+  tipo: ['tipo', 'type', 'categoria'],
+  estado: ['estado', 'status'],
+  prioridad: ['prioridad', 'priority'],
+  fecha_inicio: ['fecha_inicio', 'start_date', 'fecha_de_inicio'],
+  fecha_limite: ['fecha_limite', 'due_date', 'fecha_de_cierre'],
+  descripcion: ['descripcion', 'description', 'detalle'],
+  valor_estimado: ['valor_estimado', 'estimated_value', 'valor'],
+  linea_producto: ['linea_producto', 'producto', 'product_line'],
+  categoria: ['categoria', 'category', 'categoria_proyecto'],
+  notas: ['notas', 'notes'],
+  resultado: ['resultado', 'result', 'outcome'],
+  inicio: ['inicio', 'start', 'fecha_inicio'],
+  fin: ['fin', 'end', 'fecha_fin'],
+  hora: ['hora', 'time', 'hora_reunion'],
+  asignados_emails: ['asignados_emails', 'assigned_emails', 'emails_asignados'],
+  asistentes_emails: ['asistentes_emails', 'attendee_emails', 'emails_asistentes'],
+  tiempo_estimado_horas: ['tiempo_estimado_horas', 'estimated_hours', 'horas'],
+} as const;
 
 function normalizeEntity(value: string): ImportEntity | null {
   const normalized = (value ?? '').trim().toLowerCase();
   return IMPORT_ENTITY_ALIASES[normalized] ?? null;
+}
+
+function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): string {
+  for (const alias of aliases) {
+    const value = row[alias];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
 }
 
 export function Configuracion() {
@@ -154,20 +191,45 @@ function MasterCsvImportTab() {
 
   async function confirmImport() {
     if (errors.length) return;
+
+    const invalidRows = rows.filter((row) => {
+      const entity = normalizeEntity(row.entity);
+      if (entity === 'usuario') {
+        return !pickCsvValue(row.data, CSV_FIELD_ALIASES.email) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.nombre);
+      }
+      if (entity === 'proyecto') {
+        return !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_cliente);
+      }
+      if (entity === 'tarea') {
+        const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
+        const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
+        return !projectName || !taskName;
+      }
+      return false;
+    });
+
+    if (invalidRows.length > 0) {
+      setRows((current) => current.map((row) => {
+        if (!invalidRows.some((invalidRow) => invalidRow.id === row.id)) return row;
+        return { ...row, status: 'error', message: 'Falta nombre del proyecto o nombre de la tarea' };
+      }));
+      return;
+    }
+
     setImporting(true);
     const payload: Record<string, unknown[]> = { usuarios: [], proyectos: [], tareas: [], reuniones: [], comunicaciones: [], roles_proyecto: [], asignaciones_tarea: [], asistentes_reunion: [], registros_tiempo: [] };
-    const get = (row: MasterRow, ...names: string[]) => names.map((name) => row.data[name]?.trim()).find(Boolean) ?? '';
+    const get = (row: MasterRow, aliases: readonly string[]) => pickCsvValue(row.data, aliases);
     for (const row of rows) {
       const entity = normalizeEntity(row.entity);
-      if (entity === 'usuario') payload.usuarios.push({ nombre: get(row, 'nombre'), email: get(row, 'email'), rol: normalizeRole(get(row, 'rol')), tarifa_hora: get(row, 'tarifa_hora') || '0' });
-      if (entity === 'proyecto') payload.proyectos.push({ nombre: get(row, 'nombre'), descripcion: get(row, 'descripcion'), categoria: normalizeCategory(get(row, 'categoria')), estado: get(row, 'estado') || 'no_iniciado', prioridad: normalizePriority(get(row, 'prioridad')), linea_producto: get(row, 'linea_producto', 'producto'), fecha_inicio: get(row, 'fecha_inicio'), fecha_limite: get(row, 'fecha_limite'), valor_estimado: get(row, 'valor_estimado'), cliente: get(row, 'cliente'), template_key: get(row, 'template_key') });
-      if (entity === 'tarea') payload.tareas.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), nombre: get(row, 'nombre', 'activity_name'), descripcion: get(row, 'descripcion'), estado: get(row, 'estado') || 'no_iniciado', prioridad: normalizePriority(get(row, 'prioridad')), fecha_inicio: get(row, 'fecha_inicio'), fecha_limite: get(row, 'fecha_limite'), tiempo_estimado_horas: get(row, 'tiempo_estimado_horas', 'horas'), asignados_emails: get(row, 'asignados_emails').split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
-      if (entity === 'reunion') payload.reuniones.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), nombre: get(row, 'nombre'), tipo: get(row, 'tipo'), estado: get(row, 'estado') || 'programada', fecha: get(row, 'fecha'), hora: get(row, 'hora'), notas: get(row, 'notas'), asistentes_emails: get(row, 'asistentes_emails').split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
-      if (entity === 'comunicacion') payload.comunicaciones.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), tipo: get(row, 'tipo'), fecha: get(row, 'fecha'), resultado: get(row, 'resultado'), notas: get(row, 'notas'), usuario_email: get(row, 'usuario_email') });
-      if (entity === 'rol_proyecto') payload.roles_proyecto.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), usuario_email: get(row, 'usuario_email'), tipo_raci: get(row, 'tipo_raci', 'rol') });
-      if (entity === 'asignacion_tarea') payload.asignaciones_tarea.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), tarea_nombre: get(row, 'tarea_nombre', 'nombre'), usuario_email: get(row, 'usuario_email') });
-      if (entity === 'asistente_reunion') payload.asistentes_reunion.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), reunion_nombre: get(row, 'reunion_nombre', 'nombre'), usuario_email: get(row, 'usuario_email') });
-      if (entity === 'registro_tiempo') payload.registros_tiempo.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), tarea_nombre: get(row, 'tarea_nombre', 'nombre'), usuario_email: get(row, 'usuario_email'), inicio: get(row, 'inicio'), fin: get(row, 'fin') });
+      if (entity === 'usuario') payload.usuarios.push({ nombre: get(row, CSV_FIELD_ALIASES.nombre), email: get(row, CSV_FIELD_ALIASES.email), rol: normalizeRole(get(row, CSV_FIELD_ALIASES.rol)), tarifa_hora: get(row, CSV_FIELD_ALIASES.tarifa_hora) || '0' });
+      if (entity === 'proyecto') payload.proyectos.push({ nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), categoria: normalizeCategory(get(row, CSV_FIELD_ALIASES.categoria)), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), linea_producto: get(row, CSV_FIELD_ALIASES.linea_producto), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), valor_estimado: get(row, CSV_FIELD_ALIASES.valor_estimado), cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), template_key: get(row, ['template_key']) });
+      if (entity === 'tarea') payload.tareas.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+      if (entity === 'reunion') payload.reuniones.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+      if (entity === 'comunicacion') payload.comunicaciones.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+      if (entity === 'rol_proyecto') payload.roles_proyecto.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), tipo_raci: get(row, CSV_FIELD_ALIASES.tipo_raci) || get(row, CSV_FIELD_ALIASES.rol) });
+      if (entity === 'asignacion_tarea') payload.asignaciones_tarea.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+      if (entity === 'asistente_reunion') payload.asistentes_reunion.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), reunion_nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+      if (entity === 'registro_tiempo') payload.registros_tiempo.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), inicio: get(row, CSV_FIELD_ALIASES.inicio), fin: get(row, CSV_FIELD_ALIASES.fin) });
     }
     const { data, error } = await supabase.rpc('importar_datos_csv', { p_payload: { ...payload, nombre_archivo: fileName } });
     setImporting(false);
