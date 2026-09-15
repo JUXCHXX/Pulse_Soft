@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, FileSpreadsheet, Loader2, Palette, Trash2, XCircle } from 'lucide-react';
 import Papa from 'papaparse';
 import { supabase } from '@/lib/supabase';
-import { IMPORT_ENTITY_ALIASES, IMPORT_ENTITY_VALUES, type ImportEntity } from '@/lib/types';
+import { IMPORT_ENTITY_ALIASES, type ImportEntity } from '@/lib/types';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
 
@@ -28,7 +28,7 @@ interface ScheduleActivity {
   is_optional: boolean;
 }
 interface SchedulePreview { fileName: string; activities: ScheduleActivity[]; structure: Array<{ key: string; name: string; activities: string[] }>; errors: string[] }
-interface MasterRow { id: string; entity: string; data: Record<string, string>; status: ImportStatus; message: string }
+interface MasterRow { id: string; entity: string; data: Record<string, string>; status: ImportStatus; message: string; manuallyCorrected?: boolean }
 
 const CSV_TEMPLATES: CsvTemplateConfig[] = [
   { key: 'campuspack', label: 'Implementación Campuspack', tipo: 'implementacion', producto: 'Campuspack' },
@@ -153,6 +153,10 @@ function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): 
   }
 
   return '';
+}
+
+function setImportField(row: MasterRow, field: 'project_name' | 'task_name', value: string): MasterRow {
+  return { ...row, data: { ...row.data, [field]: value }, manuallyCorrected: true };
 }
 
 export function Configuracion() {
@@ -286,7 +290,7 @@ function MasterCsvImportTab() {
 
         if (!taskName) return true;
         if (!projectName) return true;
-        if (projectResolution.error) return true;
+        if (projectResolution.error && !row.manuallyCorrected) return true;
       }
       return false;
     });
@@ -306,11 +310,11 @@ function MasterCsvImportTab() {
           if (!projectName) {
             return { ...row, status: 'error', message: `Falta nombre del proyecto | tarea="${taskName}"` };
           }
-          if (projectResolution.error) {
+          if (projectResolution.error && !row.manuallyCorrected) {
             return { ...row, status: 'error', message: `Proyecto no resuelto: ${projectResolution.error}` };
           }
 
-          return { ...row, status: 'ok', message: `Proyecto resuelto por nombre: ${projectName}` };
+          return { ...row, status: 'ok', message: row.manuallyCorrected ? `Corrección lista: proyecto asignado a ${projectName}` : `Proyecto resuelto por nombre: ${projectName}` };
         }
         return { ...row, status: 'error', message: 'Falta nombre del proyecto o nombre de la tarea' };
       }));
@@ -366,6 +370,20 @@ function MasterCsvImportTab() {
     setResult(data as Record<string, number>);
   }
 
+  function updateImportRow(rowId: string, field: 'project_name' | 'task_name', value: string) {
+    setRows((current) => current.map((row) => {
+      if (row.id !== rowId) return row;
+      const updated = setImportField(row, field, value);
+      const projectName = pickCsvValue(updated.data, CSV_FIELD_ALIASES.proyecto_nombre);
+      const taskName = pickCsvValue(updated.data, CSV_FIELD_ALIASES.tarea_nombre);
+      if (normalizeEntity(updated.entity) !== 'tarea') return updated;
+      if (!projectName && !taskName) return { ...updated, status: 'error', message: 'Falta nombre del proyecto y nombre de la tarea' };
+      if (!projectName) return { ...updated, status: 'error', message: 'Falta nombre del proyecto' };
+      if (!taskName) return { ...updated, status: 'error', message: 'Falta nombre de la tarea' };
+      return { ...updated, status: 'ok', message: 'Corrección lista para importar' };
+    }));
+  }
+
   async function clearDatabase() {
     if (cleanText !== 'LIMPIAR BASE DE DATOS') return;
     const { error } = await supabase.rpc('limpiar_datos_operativos');
@@ -373,7 +391,7 @@ function MasterCsvImportTab() {
     else { setRows([]); setResult(null); setCleanText(''); setShowClean(false); }
   }
 
-  return <div className="space-y-4"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Importar datos</h3><p className="text-sm text-[var(--text-secondary)]">Selecciona el archivo CSV maestro. Las entidades se resuelven relacionalmente en Supabase; no se aceptan archivos Excel.</p><p className="text-xs text-[var(--text-secondary)] mt-2">Columna obligatoria: <code>entidad</code>. Valores: usuario, proyecto, tarea, rol_proyecto, asignacion_tarea, reunion, asistente_reunion, comunicacion.</p></div><button onClick={() => setShowClean(true)} className="btn-secondary text-sm text-danger flex items-center gap-2 shrink-0"><Trash2 className="w-4 h-4" /> Limpiar base de datos</button></div><div className="card p-8 text-center"><input id="master-csv" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseMaster(file); event.currentTarget.value = ''; }} className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:text-white" /></div>{fileName && <div className="card p-5 space-y-4"><div className="flex items-center justify-between"><div><h4 className="font-semibold text-[var(--text-primary)]">Vista previa: {fileName}</h4><p className="text-sm text-[var(--text-secondary)]">{rows.length} registros · {errors.length} errores</p></div><button onClick={() => void confirmImport()} disabled={errors.length > 0 || importing || !rows.length} className="btn-primary text-sm flex items-center gap-2">{importing && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar importación</button></div><div className="grid grid-cols-2 md:grid-cols-5 gap-2">{Object.entries(counts).map(([entity, count]) => <div key={entity} className="rounded-lg bg-[var(--bg-base)] p-3"><p className="text-lg font-bold text-[var(--text-primary)]">{count}</p><p className="text-xs text-[var(--text-secondary)]">{entity}</p></div>)}</div>{result && <p className="text-sm text-success">Importación completada: {JSON.stringify(result)}</p>}{rows.filter((row) => row.status === 'error').map((row) => <p key={row.id} className="text-sm text-danger flex items-center gap-2"><XCircle className="w-4 h-4" /> {row.message}</p>)}{rows.filter((row) => row.status === 'ok').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-[var(--text-secondary)]"><CheckCircle2 className="w-3 h-3 inline mr-1 text-success" />{row.entity}: {row.data.nombre ?? row.data.activity_name ?? row.message}</p>)}</div>}{showClean && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-danger">Limpiar base de datos</h3><p className="text-sm text-[var(--text-secondary)]">Se eliminarán proyectos, tareas, asignaciones, tiempos, reuniones, comunicaciones, reportes, relaciones RACI e historial de importaciones. Las plantillas, usuarios y configuración permanecerán intactos.</p><p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR BASE DE DATOS</strong> para confirmar.</p><input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR BASE DE DATOS" /><div className="flex justify-end gap-3"><button onClick={() => setShowClean(false)} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void clearDatabase()} disabled={cleanText !== 'LIMPIAR BASE DE DATOS'} className="btn-primary text-sm">Confirmar limpieza</button></div></div></div>}</div>;
+  return <div className="space-y-4"><div className="flex items-start justify-between gap-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Importar datos</h3><p className="text-sm text-[var(--text-secondary)]">Selecciona el archivo CSV maestro. Las entidades se resuelven relacionalmente en Supabase; no se aceptan archivos Excel.</p><p className="text-xs text-[var(--text-secondary)] mt-2">Columna obligatoria: <code>entidad</code>. Valores: usuario, proyecto, tarea, rol_proyecto, asignacion_tarea, reunion, asistente_reunion, comunicacion.</p></div><button onClick={() => setShowClean(true)} className="btn-secondary text-sm text-danger flex items-center gap-2 shrink-0"><Trash2 className="w-4 h-4" /> Limpiar base de datos</button></div><div className="card p-8 text-center"><input id="master-csv" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) parseMaster(file); event.currentTarget.value = ''; }} className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--accent)] file:px-3 file:py-2 file:text-sm file:text-white" /></div>{fileName && <div className="card p-5 space-y-4"><div className="flex items-center justify-between"><div><h4 className="font-semibold text-[var(--text-primary)]">Vista previa: {fileName}</h4><p className="text-sm text-[var(--text-secondary)]">{rows.length} registros · {errors.length} errores</p></div><button onClick={() => void confirmImport()} disabled={errors.length > 0 || importing || !rows.length} className="btn-primary text-sm flex items-center gap-2">{importing && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar importación</button></div><div className="grid grid-cols-2 md:grid-cols-5 gap-2">{Object.entries(counts).map(([entity, count]) => <div key={entity} className="rounded-lg bg-[var(--bg-base)] p-3"><p className="text-lg font-bold text-[var(--text-primary)]">{count}</p><p className="text-xs text-[var(--text-secondary)]">{entity}</p></div>)}</div>{result && <p className="text-sm text-success">Importación completada: {JSON.stringify(result)}</p>}<div className="space-y-2">{rows.filter((row) => row.status === 'error').map((row) => { const isTask = normalizeEntity(row.entity) === 'tarea'; return <div key={row.id} className="rounded-lg border border-red-200 bg-red-50/50 p-3 space-y-2"><p className="text-sm text-danger flex items-center gap-2"><XCircle className="w-4 h-4 shrink-0" /> {row.message}</p>{isTask && <div className="grid grid-cols-1 md:grid-cols-2 gap-2"><label className="text-xs text-[var(--text-secondary)]">Asignar proyecto<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre)} onChange={(event) => updateImportRow(row.id, 'project_name', event.target.value)} className="input-field mt-1" placeholder="Nombre exacto del proyecto" /></label><label className="text-xs text-[var(--text-secondary)]">Corregir tarea<input value={pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre)} onChange={(event) => updateImportRow(row.id, 'task_name', event.target.value)} className="input-field mt-1" placeholder="Nombre de la tarea" /></label></div>}</div>; })}</div>{rows.filter((row) => row.status === 'ok').slice(0, 20).map((row) => <p key={row.id} className="text-xs text-[var(--text-secondary)]"><CheckCircle2 className="w-3 h-3 inline mr-1 text-success" />{row.entity}: {row.data.nombre ?? row.data.activity_name ?? row.message}</p>)}</div>}{showClean && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-danger">Limpiar base de datos</h3><p className="text-sm text-[var(--text-secondary)]">Se eliminarán proyectos, tareas, asignaciones, tiempos, reuniones, comunicaciones, reportes, relaciones RACI e historial de importaciones. Las plantillas, usuarios y configuración permanecerán intactos.</p><p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR BASE DE DATOS</strong> para confirmar.</p><input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR BASE DE DATOS" /><div className="flex justify-end gap-3"><button onClick={() => setShowClean(false)} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void clearDatabase()} disabled={cleanText !== 'LIMPIAR BASE DE DATOS'} className="btn-primary text-sm">Confirmar limpieza</button></div></div></div>}</div>;
 }
 
 function normalizePriority(value: string | undefined) { const normalized = (value ?? '').trim().toLowerCase(); return ({ baja: 'baja', low: 'baja', media: 'media', medium: 'media', normal: 'media', alta: 'alta', high: 'alta', urgente: 'urgente', urgent: 'urgente' } as Record<string, string>)[normalized] ?? 'media'; }
