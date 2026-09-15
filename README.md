@@ -15,7 +15,7 @@ que mantenerlo o extenderlo.
 - Navegacion: React Router.
 - Backend y base de datos: Supabase Auth, PostgreSQL, RLS, vistas y funciones RPC.
 - Graficas: Recharts.
-- Lectura de Excel: SheetJS (`xlsx`) en el navegador.
+- Importacion de datos: PapaParse para CSV maestro en el navegador.
 - Asistente: Supabase Edge Function + Groq para LLM, speech-to-text y text-to-speech.
 - Idioma funcional: espanol. Moneda mostrada: MXN.
 
@@ -114,7 +114,7 @@ supabase/
 | `/equipo` | Usuarios y carga | `usuarios`, `vw_carga_consultor` |
 | `/reportes` | Costos, carga e importaciones | `vw_proyecto_resumen`, `vw_carga_consultor`, `importaciones` |
 | `/mensajes` | Mensajes | Revisar la implementacion antes de extenderla |
-| `/configuracion` | Plantillas, importacion y tema | `plantillas_tareas` y RPC `importar_datos` |
+| `/configuracion` | Plantillas de cronograma, importacion CSV y tema | `plantillas_csv`, `plantillas_csv_procesos`, `plantillas_csv_tareas` y RPCs de importacion |
 | `/asistente` | Chat y voz para PMO | Edge Function `asistente-ia` |
 
 La mayoria de las paginas carga datos en `useEffect`, mantiene el resultado en
@@ -134,7 +134,8 @@ El esquema se crea principalmente en
 - `proyectos`: nombre, cliente, categoria, estado, prioridad, fechas y valor
 	estimado.
 - `proyecto_roles`: relacion RACI entre proyectos y usuarios.
-- `plantillas_tareas`: tareas reutilizables por categoria.
+- `plantillas_csv`: moldes de cronograma identificados por `template_key`.
+- `plantillas_csv_procesos` y `plantillas_csv_tareas`: procesos y actividades de las plantillas; nunca son datos operativos de proyectos.
 - `tareas`: tareas de un proyecto, estado, prioridad, fechas y estimacion.
 - `tarea_asignados`: asignacion multiple de usuarios a tareas.
 - `registros_tiempo`: sesiones del cronometro. `fin = null` significa activa.
@@ -192,25 +193,31 @@ Las funciones SQL `auth_rol()` y `auth_usuario_id()` relacionan el usuario de
 Supabase Auth con `usuarios`. Las comprobaciones de rol del frontend son solo
 de UX; no sustituyen las politicas de base de datos.
 
-## Flujo actual de carga de datos desde Excel
+## Flujo actual de carga de datos desde CSV
 
-La carga se inicia en `Configuracion` y solo se muestra a la PMO.
+La carga se inicia en `Configuracion` y solo se muestra a la PMO. Excel ya no es
+una via soportada ni existe como dependencia del frontend.
+
+El CSV maestro usa una columna `entidad` para identificar cada registro. Los
+valores admitidos son `usuario`, `proyecto`, `tarea`, `rol_proyecto`,
+`asignacion_tarea`, `reunion`, `asistente_reunion`, `comunicacion` y
+`registro_tiempo`. Las columnas comunes de resolucion son `email`,
+`proyecto_nombre`, `tarea_nombre` y `reunion_nombre`; el resto de columnas se
+interpreta segun la entidad. La importacion conserva la separacion con las
+plantillas de cronograma, que usan `template_key` y nunca se limpian con los
+datos operativos.
 
 ### 1. Lectura local y deteccion
 
-1. El usuario selecciona un `.xlsx` o `.xls`.
-2. `src/pages/Configuracion.tsx` usa `FileReader` y `XLSX.read` en el
-	 navegador. El archivo no se envia como binario a Supabase.
-3. Se buscan estas hojas por fragmento de nombre:
-	 - `Base de datos del proyecto`
-	 - `Lista de Tareas`
-	 - `Lista de Equipo`
-	 - `Registro de reuniones`
-	 - `Registro de comunicaciones`
-4. La fila de encabezados se detecta entre las primeras 30 filas y las
-	 columnas se resuelven por el texto exacto del encabezado.
-5. Las fechas Excel se convierten a `YYYY-MM-DD`; numeros con moneda,
-	 separadores de miles o coma decimal pasan por `sanitizeNumeric`.
+1. El usuario selecciona un unico `.csv` maestro.
+2. PapaParse lee el archivo respetando comillas, comas y saltos de linea.
+3. Cada registro declara `entidad`: `usuario`, `proyecto`, `tarea`,
+   `rol_proyecto`, `asignacion_tarea`, `reunion`, `asistente_reunion` o
+   `comunicacion`.
+4. Las relaciones se resuelven por `email` para usuarios y por la clave
+   identificadora de proyecto antes de guardar UUIDs reales.
+5. La vista previa muestra conteos por entidad y bloquea errores de estructura
+   antes de llamar a la RPC transaccional `importar_datos_csv`.
 
 ### 2. Prevalidacion y resolucion
 
@@ -233,7 +240,7 @@ La UI construye un objeto con esta forma general:
 
 ```json
 {
-	"nombre_archivo": "datos.xlsx",
+	"nombre_archivo": "datos.csv",
 	"usuarios": [],
 	"proyectos": [],
 	"tareas": [],
@@ -243,9 +250,8 @@ La UI construye un objeto con esta forma general:
 ```
 
 Los objetos usan nombres y correos para resolver relaciones. La UI traduce
-estados, categorias, prioridades y tipos del Excel a los valores del dominio.
-Las tareas importadas usan `fecha_finalizacion` del Excel como fecha limite
-del sistema.
+estados, categorias, prioridades y tipos del CSV a los valores del dominio.
+Las claves externas se resuelven en la RPC antes de insertar UUIDs reales.
 
 ### 4. Escritura transaccional en PostgreSQL
 
@@ -292,12 +298,16 @@ las ultimas importaciones de `importaciones` para usuarios PMO.
 ## Mutaciones principales desde el frontend
 
 - Crear usuario: RPC `crear_usuario_auth` desde `Equipo`.
-- Crear proyecto: `insert` en `proyectos`; despues puede llamar a
-	`copiar_plantilla_tareas` para generar tareas de su categoria.
+- Crear proyecto: `insert` en `proyectos`; despues llama a
+	`copiar_plantilla_csv_tareas` para instanciar la plantilla cuyo
+	`template_key` corresponde al tipo y producto.
 - Cambiar estado de tarea: `update` en `tareas`.
 - Iniciar cronometro: `insert` en `registros_tiempo`.
 - Detener cronometro: `update` de `fin` en `registros_tiempo`.
-- Crear/eliminar plantilla: `insert` o `delete` en `plantillas_tareas`.
+- Cargar/reemplazar plantilla: RPC `guardar_plantilla_csv`.
+- Limpiar plantillas: RPC `limpiar_plantillas_csv`, sin tocar cronogramas reales.
+- Limpiar datos operativos: RPC `limpiar_datos_operativos`; conserva usuarios,
+  configuración y las cuatro plantillas.
 - Generar reporte semanal: RPC `generar_reporte_semanal` disponible en SQL,
 	aunque la pantalla de reportes actual se enfoca en vistas agregadas e
 	historial de importaciones.
@@ -365,7 +375,7 @@ estado React de la pantalla; no hay persistencia de conversaciones.
 | Sesion y perfil | `src/context/AuthContext.tsx` |
 | Cliente Supabase | `src/lib/supabase.ts` |
 | Tipos de dominio | `src/lib/types.ts` |
-| Importacion Excel | `src/pages/Configuracion.tsx` |
+| Importacion CSV maestro | `src/pages/Configuracion.tsx` |
 | Esquema, vistas y triggers | `supabase/migrations/20260821071356_0001_pulsesoft_schema.sql` |
 | Permisos RLS | `supabase/migrations/20260821071452_0002_pulsesoft_rls_policies.sql` |
 | RPC de negocio | `supabase/migrations/20260821071609_0003_pulsesoft_functions.sql` y migraciones posteriores |
