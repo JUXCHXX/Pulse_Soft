@@ -10,6 +10,7 @@ import {
   DollarSign,
   Clock,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
@@ -52,6 +53,9 @@ export function ProyectoDetalle() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('resumen');
+  const [showNewActivity, setShowNewActivity] = useState(false);
+  const [newActivity, setNewActivity] = useState({ nombre: '', procesoId: '', duracion: '' });
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -81,6 +85,37 @@ export function ProyectoDetalle() {
     setResumen(resResumen.data as typeof resumen);
     setLoading(false);
   }, [id]);
+
+  async function addActivity(event: React.FormEvent) {
+    event.preventDefault();
+    if (!id || !newActivity.nombre.trim() || !newActivity.procesoId) return;
+    const processTasks = tareas.filter((task) => task.proceso_id === newActivity.procesoId);
+    const { error } = await supabase.from('tareas').insert({
+      proyecto_id: id,
+      proceso_id: newActivity.procesoId,
+      orden: processTasks.length + 1,
+      nombre: newActivity.nombre.trim(),
+      duracion_ideal_dias: newActivity.duracion ? Number(newActivity.duracion) : null,
+    });
+    if (error) {
+      setMutationError(error.message);
+      return;
+    }
+    setNewActivity({ nombre: '', procesoId: '', duracion: '' });
+    setShowNewActivity(false);
+    setMutationError(null);
+    await loadData();
+  }
+
+  async function deleteActivity(taskId: string) {
+    if (!window.confirm('¿Eliminar esta actividad del cronograma? La plantilla original no cambiará.')) return;
+    const { error } = await supabase.from('tareas').delete().eq('id', taskId);
+    if (error) setMutationError(error.message);
+    else {
+      setMutationError(null);
+      await loadData();
+    }
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -214,12 +249,13 @@ export function ProyectoDetalle() {
                   Tareas del proyecto
                 </h3>
                 {canEdit && (
-                  <button className="btn-primary text-xs flex items-center gap-1 !py-2">
+                  <button onClick={() => setShowNewActivity(true)} className="btn-primary text-xs flex items-center gap-1 !py-2">
                     <Plus className="w-3.5 h-3.5" />
                     Nueva Tarea
                   </button>
                 )}
               </div>
+              {mutationError && <p className="text-sm text-danger mb-3">{mutationError}</p>}
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
@@ -265,6 +301,13 @@ export function ProyectoDetalle() {
                           <td className={`py-3 text-sm ${overdue ? 'text-danger' : 'text-[var(--text-secondary)]'}`}>
                             {formatDate(t.fecha_limite)}
                           </td>
+                          {canEdit && (
+                            <td className="py-3 text-right">
+                              <button onClick={() => void deleteActivity(t.id)} className="text-[var(--text-secondary)] hover:text-danger" title="Eliminar actividad">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       );
                     })}
@@ -316,6 +359,25 @@ export function ProyectoDetalle() {
                   <p className="text-xs text-[var(--text-secondary)]">Atrasadas</p>
                 </div>
               </div>
+            </div>
+          )}
+
+          {showNewActivity && canEdit && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+              <form onSubmit={addActivity} className="card p-6 w-full max-w-md space-y-4">
+                <h3 className="text-lg font-bold text-[var(--text-primary)]">Nueva actividad</h3>
+                <p className="text-xs text-[var(--text-secondary)]">Se agregará solo a este cronograma; la plantilla permanecerá intacta.</p>
+                <input required value={newActivity.nombre} onChange={(event) => setNewActivity({ ...newActivity, nombre: event.target.value })} className="input-field" placeholder="Nombre de la actividad" />
+                <select required value={newActivity.procesoId} onChange={(event) => setNewActivity({ ...newActivity, procesoId: event.target.value })} className="input-field">
+                  <option value="">Selecciona un proceso</option>
+                  {procesos.map((process) => <option key={process.id} value={process.id}>{process.nombre}</option>)}
+                </select>
+                <input type="number" min="0" value={newActivity.duracion} onChange={(event) => setNewActivity({ ...newActivity, duracion: event.target.value })} className="input-field" placeholder="Duración ideal en días (opcional)" />
+                <div className="flex justify-end gap-3">
+                  <button type="button" onClick={() => setShowNewActivity(false)} className="btn-secondary text-sm">Cancelar</button>
+                  <button type="submit" className="btn-primary text-sm">Agregar actividad</button>
+                </div>
+              </form>
             </div>
           )}
         </div>

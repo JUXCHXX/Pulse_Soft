@@ -103,7 +103,7 @@ interface CsvTask {
   activity_key: string;
   activity_name: string;
   parent_process_key: string;
-  order: number;
+  sort_order: number;
   duration_days: number | null;
   start_offset_days: number;
   default_priority: string;
@@ -140,7 +140,7 @@ const CSV_TEMPLATES: CsvTemplateConfig[] = [
   { key: 'soporte', label: 'Soporte', tipo: 'soporte', producto: null },
 ];
 
-const SCHEDULE_REQUIRED_HEADERS = ['template_key', 'process_key', 'process_name', 'activity_key', 'activity_name', 'order'];
+const SCHEDULE_REQUIRED_HEADERS = ['template_key', 'process_key', 'process_name', 'activity_key', 'activity_name'];
 
 function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
   const [templates, setTemplates] = useState<Partial<Record<CsvTemplateKey, CsvTemplateState>>>({});
@@ -194,7 +194,9 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
       transformHeader: (header) => header.trim().replace(/^\uFEFF/, ''),
       complete: (result) => {
         const headers = (result.meta.fields ?? []).map((header) => header.trim());
+        const hasSortOrder = headers.includes('order') || headers.includes('sort_order');
         const missing = SCHEDULE_REQUIRED_HEADERS.filter((header) => !headers.includes(header));
+        if (!hasSortOrder) missing.push('order o sort_order');
         const errors = result.errors.map((error) => `Fila ${error.row ?? '?'}: ${error.message}`);
         const expectedKey = config.tipo === 'soporte' ? 'support' : `implementation_${config.producto?.toLowerCase()}`;
         if (missing.length > 0) errors.unshift(`Faltan columnas obligatorias: ${missing.join(', ')}`);
@@ -220,7 +222,7 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
             errors.push(`Fila ${index + 2}: cada actividad debe tener proceso y actividad.`);
             return;
           }
-          const order = Number((row.order ?? '').trim());
+          const order = Number((row.sort_order ?? row.order ?? '').trim());
           const duration = (row.duration_days ?? '').trim();
           const offset = (row.start_offset_days ?? '').trim();
           if (!Number.isInteger(order) || order < 0) errors.push(`Fila ${index + 2}: "order" debe ser un entero no negativo.`);
@@ -234,7 +236,7 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
             activity_key: activityKey,
             activity_name: activityName,
             parent_process_key: (row.parent_process_key ?? '').trim(),
-            order,
+            sort_order: order,
             duration_days: duration === '' ? null : Number(duration),
             start_offset_days: offset === '' ? 0 : Number(offset),
             default_priority: normalizePriority(row.default_priority),
@@ -246,7 +248,7 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
           processKey: process.process_key,
           processName: process.process_name,
           parentProcessKey: process.parent_process_key,
-          activities: tasks.filter((task) => task.process_key === process.process_key).sort((a, b) => a.order - b.order).map((task) => task.activity_name),
+          activities: tasks.filter((task) => task.process_key === process.process_key).sort((a, b) => a.sort_order - b.sort_order).map((task) => task.activity_name),
         }));
         setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks, structure, ignored, errors } }));
       },
@@ -288,6 +290,11 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
           <button onClick={() => setShowCleanModal(true)} className="btn-secondary text-sm flex items-center gap-2 text-danger shrink-0">
             <Trash2 className="w-4 h-4" /> Limpiar datos
           </button>
+        </div>
+        <div className="rounded-lg bg-[var(--bg-base)] p-3 text-xs text-[var(--text-secondary)] space-y-1 mt-3">
+          <p className="font-medium text-[var(--text-primary)]">Formato esperado para plantilla de cronograma</p>
+          <p>Obligatorias: <code>template_key</code>, <code>process_key</code>, <code>process_name</code>, <code>activity_key</code>, <code>activity_name</code> y <code>order</code> o <code>sort_order</code>.</p>
+          <p>Opcionales: <code>parent_process_key</code>, <code>duration_days</code>, <code>start_offset_days</code>, <code>default_priority</code>, <code>suggested_role</code>, <code>is_optional</code>.</p>
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

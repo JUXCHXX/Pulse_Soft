@@ -60,9 +60,9 @@ BEGIN
   RETURNING id INTO v_plantilla_id;
 
   INSERT INTO plantillas_csv_procesos (plantilla_id, process_key, nombre, orden)
-  SELECT v_plantilla_id, item.process_key, item.process_name, min(item.orden)
+  SELECT v_plantilla_id, item.process_key, item.process_name, min(item.sort_order)
   FROM jsonb_to_recordset(coalesce(p_tareas, '[]'::jsonb)) AS item(
-    process_key text, process_name text, orden integer
+    process_key text, process_name text, sort_order integer
   )
   WHERE nullif(trim(item.process_key), '') IS NOT NULL
     AND nullif(trim(item.process_name), '') IS NOT NULL
@@ -72,13 +72,13 @@ BEGIN
     plantilla_id, proceso_id, activity_key, tarea, orden, tipo_registro,
     duracion_ideal_dias, start_offset_days, default_priority, rol_sugerido, is_optional
   )
-  SELECT v_plantilla_id, p.id, item.activity_key, item.activity_name, item.orden,
+  SELECT v_plantilla_id, p.id, item.activity_key, item.activity_name, item.sort_order,
     'Actividad', item.duration_days, coalesce(item.start_offset_days, 0),
     coalesce(nullif(item.default_priority, '')::prioridad_nivel, 'media'),
     nullif(item.suggested_role, ''), coalesce(item.is_optional, false)
   FROM jsonb_to_recordset(coalesce(p_tareas, '[]'::jsonb)) AS item(
     process_key text, process_name text, activity_key text, activity_name text,
-    parent_process_key text, orden integer, duration_days integer,
+    parent_process_key text, sort_order integer, duration_days integer,
     start_offset_days integer, default_priority text, suggested_role text,
     is_optional boolean
   )
@@ -91,7 +91,7 @@ BEGIN
   SET parent_proceso_id = parent.id
   FROM jsonb_to_recordset(coalesce(p_tareas, '[]'::jsonb)) AS item(
     process_key text, process_name text, activity_key text, activity_name text,
-    parent_process_key text, orden integer, duration_days integer,
+    parent_process_key text, sort_order integer, duration_days integer,
     start_offset_days integer, default_priority text, suggested_role text,
     is_optional boolean
   )
