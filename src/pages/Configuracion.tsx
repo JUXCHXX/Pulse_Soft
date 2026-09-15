@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, FileSpreadsheet, Loader2, Palette, Trash2, XCircle } from 'lucide-react';
 import Papa from 'papaparse';
 import { supabase } from '@/lib/supabase';
+import { IMPORT_ENTITY_ALIASES, IMPORT_ENTITY_VALUES, type ImportEntity } from '@/lib/types';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
 
@@ -37,7 +38,12 @@ const CSV_TEMPLATES: CsvTemplateConfig[] = [
 ];
 
 const TEMPLATE_REQUIRED = ['template_key', 'process_key', 'process_name', 'activity_key', 'activity_name'];
-const MASTER_ENTITIES = ['usuario', 'proyecto', 'tarea', 'rol_proyecto', 'asignacion_tarea', 'reunion', 'asistente_reunion', 'comunicacion', 'registro_tiempo'];
+const MASTER_ENTITIES = [...IMPORT_ENTITY_VALUES];
+
+function normalizeEntity(value: string): ImportEntity | null {
+  const normalized = (value ?? '').trim().toLowerCase();
+  return IMPORT_ENTITY_ALIASES[normalized] ?? null;
+}
 
 export function Configuracion() {
   const { usuario } = useAuth();
@@ -135,9 +141,11 @@ function MasterCsvImportTab() {
       const required = ['entidad'];
       const next: MasterRow[] = [];
       parsed.data.forEach((data, index) => {
-        const entity = (data.entidad ?? '').trim().toLowerCase();
-        const status: ImportStatus = !MASTER_ENTITIES.includes(entity) ? 'error' : 'ok';
-        next.push({ id: `${entity}-${index}`, entity: entity || 'fila', data, status, message: status === 'ok' ? 'Lista para importar' : `Entidad no soportada: ${entity || 'vacía'}` });
+        const entityRaw = (data.entidad ?? '').trim().toLowerCase();
+        const entity = normalizeEntity(entityRaw);
+        const status: ImportStatus = !entity ? 'error' : 'ok';
+        const entityName = entity ? entity : entityRaw ? entityRaw : 'fila';
+        next.push({ id: `${entityName}-${index}`, entity: entityName, data, status, message: status === 'ok' ? 'Lista para importar' : `Entidad no soportada: ${entityRaw || 'vacía'}` });
       });
       if (headers.length === 0 || required.some((header) => !headers.includes(header))) next.unshift({ id: 'header-error', entity: 'archivo', data: {}, status: 'error', message: 'El CSV debe incluir la columna entidad.' });
       setRows(next); setFileName(file.name); setResult(null);
@@ -150,15 +158,16 @@ function MasterCsvImportTab() {
     const payload: Record<string, unknown[]> = { usuarios: [], proyectos: [], tareas: [], reuniones: [], comunicaciones: [], roles_proyecto: [], asignaciones_tarea: [], asistentes_reunion: [], registros_tiempo: [] };
     const get = (row: MasterRow, ...names: string[]) => names.map((name) => row.data[name]?.trim()).find(Boolean) ?? '';
     for (const row of rows) {
-      if (row.entity === 'usuario') payload.usuarios.push({ nombre: get(row, 'nombre'), email: get(row, 'email'), rol: normalizeRole(get(row, 'rol')), tarifa_hora: get(row, 'tarifa_hora') || '0' });
-      if (row.entity === 'proyecto') payload.proyectos.push({ nombre: get(row, 'nombre'), descripcion: get(row, 'descripcion'), categoria: normalizeCategory(get(row, 'categoria')), estado: get(row, 'estado') || 'no_iniciado', prioridad: normalizePriority(get(row, 'prioridad')), linea_producto: get(row, 'linea_producto', 'producto'), fecha_inicio: get(row, 'fecha_inicio'), fecha_limite: get(row, 'fecha_limite'), valor_estimado: get(row, 'valor_estimado'), cliente: get(row, 'cliente'), template_key: get(row, 'template_key') });
-      if (row.entity === 'tarea') payload.tareas.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), nombre: get(row, 'nombre', 'activity_name'), descripcion: get(row, 'descripcion'), estado: get(row, 'estado') || 'no_iniciado', prioridad: normalizePriority(get(row, 'prioridad')), fecha_inicio: get(row, 'fecha_inicio'), fecha_limite: get(row, 'fecha_limite'), tiempo_estimado_horas: get(row, 'tiempo_estimado_horas', 'horas'), asignados_emails: get(row, 'asignados_emails').split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
-      if (row.entity === 'reunion') payload.reuniones.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), nombre: get(row, 'nombre'), tipo: get(row, 'tipo'), estado: get(row, 'estado') || 'programada', fecha: get(row, 'fecha'), hora: get(row, 'hora'), notas: get(row, 'notas'), asistentes_emails: get(row, 'asistentes_emails').split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
-      if (row.entity === 'comunicacion') payload.comunicaciones.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), tipo: get(row, 'tipo'), fecha: get(row, 'fecha'), resultado: get(row, 'resultado'), notas: get(row, 'notas'), usuario_email: get(row, 'usuario_email') });
-      if (row.entity === 'rol_proyecto') payload.roles_proyecto.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), usuario_email: get(row, 'usuario_email'), tipo_raci: get(row, 'tipo_raci', 'rol') });
-      if (row.entity === 'asignacion_tarea') payload.asignaciones_tarea.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), tarea_nombre: get(row, 'tarea_nombre', 'nombre'), usuario_email: get(row, 'usuario_email') });
-      if (row.entity === 'asistente_reunion') payload.asistentes_reunion.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), reunion_nombre: get(row, 'reunion_nombre', 'nombre'), usuario_email: get(row, 'usuario_email') });
-      if (row.entity === 'registro_tiempo') payload.registros_tiempo.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), tarea_nombre: get(row, 'tarea_nombre', 'nombre'), usuario_email: get(row, 'usuario_email'), inicio: get(row, 'inicio'), fin: get(row, 'fin') });
+      const entity = normalizeEntity(row.entity);
+      if (entity === 'usuario') payload.usuarios.push({ nombre: get(row, 'nombre'), email: get(row, 'email'), rol: normalizeRole(get(row, 'rol')), tarifa_hora: get(row, 'tarifa_hora') || '0' });
+      if (entity === 'proyecto') payload.proyectos.push({ nombre: get(row, 'nombre'), descripcion: get(row, 'descripcion'), categoria: normalizeCategory(get(row, 'categoria')), estado: get(row, 'estado') || 'no_iniciado', prioridad: normalizePriority(get(row, 'prioridad')), linea_producto: get(row, 'linea_producto', 'producto'), fecha_inicio: get(row, 'fecha_inicio'), fecha_limite: get(row, 'fecha_limite'), valor_estimado: get(row, 'valor_estimado'), cliente: get(row, 'cliente'), template_key: get(row, 'template_key') });
+      if (entity === 'tarea') payload.tareas.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), nombre: get(row, 'nombre', 'activity_name'), descripcion: get(row, 'descripcion'), estado: get(row, 'estado') || 'no_iniciado', prioridad: normalizePriority(get(row, 'prioridad')), fecha_inicio: get(row, 'fecha_inicio'), fecha_limite: get(row, 'fecha_limite'), tiempo_estimado_horas: get(row, 'tiempo_estimado_horas', 'horas'), asignados_emails: get(row, 'asignados_emails').split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+      if (entity === 'reunion') payload.reuniones.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), nombre: get(row, 'nombre'), tipo: get(row, 'tipo'), estado: get(row, 'estado') || 'programada', fecha: get(row, 'fecha'), hora: get(row, 'hora'), notas: get(row, 'notas'), asistentes_emails: get(row, 'asistentes_emails').split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+      if (entity === 'comunicacion') payload.comunicaciones.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), tipo: get(row, 'tipo'), fecha: get(row, 'fecha'), resultado: get(row, 'resultado'), notas: get(row, 'notas'), usuario_email: get(row, 'usuario_email') });
+      if (entity === 'rol_proyecto') payload.roles_proyecto.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), proyecto_cliente: get(row, 'cliente'), usuario_email: get(row, 'usuario_email'), tipo_raci: get(row, 'tipo_raci', 'rol') });
+      if (entity === 'asignacion_tarea') payload.asignaciones_tarea.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), tarea_nombre: get(row, 'tarea_nombre', 'nombre'), usuario_email: get(row, 'usuario_email') });
+      if (entity === 'asistente_reunion') payload.asistentes_reunion.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), reunion_nombre: get(row, 'reunion_nombre', 'nombre'), usuario_email: get(row, 'usuario_email') });
+      if (entity === 'registro_tiempo') payload.registros_tiempo.push({ proyecto_nombre: get(row, 'proyecto_nombre', 'project_name'), tarea_nombre: get(row, 'tarea_nombre', 'nombre'), usuario_email: get(row, 'usuario_email'), inicio: get(row, 'inicio'), fin: get(row, 'fin') });
     }
     const { data, error } = await supabase.rpc('importar_datos_csv', { p_payload: { ...payload, nombre_archivo: fileName } });
     setImporting(false);

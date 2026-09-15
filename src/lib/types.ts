@@ -20,6 +20,41 @@ export type TipoRaci = 'responsable' | 'aprueba' | 'consultado' | 'informado';
 export type TipoReunion = string;
 export type TipoComunicacion = string;
 
+export const IMPORT_ENTITY_VALUES = [
+  'usuario',
+  'proyecto',
+  'tarea',
+  'rol_proyecto',
+  'asignacion_tarea',
+  'reunion',
+  'asistente_reunion',
+  'comunicacion',
+  'registro_tiempo',
+] as const;
+
+export type ImportEntity = (typeof IMPORT_ENTITY_VALUES)[number];
+
+export const IMPORT_ENTITY_ALIASES: Record<string, ImportEntity> = {
+  usuario: 'usuario',
+  usuarios: 'usuario',
+  proyecto: 'proyecto',
+  proyectos: 'proyecto',
+  tarea: 'tarea',
+  tareas: 'tarea',
+  rol_proyecto: 'rol_proyecto',
+  roles_proyecto: 'rol_proyecto',
+  asignacion_tarea: 'asignacion_tarea',
+  asignaciones_tarea: 'asignacion_tarea',
+  reunion: 'reunion',
+  reuniones: 'reunion',
+  asistente_reunion: 'asistente_reunion',
+  asistentes_reunion: 'asistente_reunion',
+  comunicacion: 'comunicacion',
+  comunicaciones: 'comunicacion',
+  registro_tiempo: 'registro_tiempo',
+  registros_tiempo: 'registro_tiempo',
+};
+
 export interface Usuario {
   id: string;
   auth_id: string | null;
