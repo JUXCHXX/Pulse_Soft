@@ -38,7 +38,6 @@ const CSV_TEMPLATES: CsvTemplateConfig[] = [
 ];
 
 const TEMPLATE_REQUIRED = ['template_key', 'process_key', 'process_name', 'activity_key', 'activity_name'];
-const MASTER_ENTITIES = [...IMPORT_ENTITY_VALUES];
 const CSV_FIELD_ALIASES = {
   nombre: ['nombre', 'full_name', 'nombre_usuario', 'usuario_nombre'],
   email: ['email', 'correo', 'usuario_email', 'email_usuario'],
@@ -81,6 +80,55 @@ function normalizeCsvKey(value: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/g, '')
     .trim();
+}
+
+function normalizeImportName(value: string): string {
+  return (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildProjectLookup(rows: MasterRow[]) {
+  const projectIdsByName = new Map<string, string>();
+  const duplicateNames = new Set<string>();
+
+  for (const row of rows) {
+    if (normalizeEntity(row.entity) !== 'proyecto') continue;
+    const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
+    const projectId = (row.data.project_id ?? row.data.projectId ?? row.data['project-id'] ?? '').trim();
+    if (!projectName || !projectId) continue;
+    const key = normalizeImportName(projectName);
+    if (projectIdsByName.has(key)) {
+      duplicateNames.add(key);
+      continue;
+    }
+    projectIdsByName.set(key, projectId);
+  }
+
+  return { projectIdsByName, duplicateNames };
+}
+
+function resolveProjectId(row: MasterRow, projectIdsByName: Map<string, string>, duplicateNames: Set<string>): { projectId: string; resolvedByName: boolean; error: string | null } {
+  const explicitProjectId = (row.data.project_id ?? row.data.projectId ?? row.data['project-id'] ?? '').trim();
+  if (explicitProjectId) return { projectId: explicitProjectId, resolvedByName: false, error: null };
+
+  const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
+  if (!projectName) return { projectId: '', resolvedByName: false, error: 'Falta nombre del proyecto' };
+
+  const normalizedKey = normalizeImportName(projectName);
+  if (duplicateNames.has(normalizedKey)) {
+    return { projectId: '', resolvedByName: false, error: `Proyecto ambiguo: nombre duplicado después de normalizar -> ${projectName}` };
+  }
+
+  const resolvedProjectId = projectIdsByName.get(normalizedKey) ?? '';
+  if (!resolvedProjectId) {
+    return { projectId: '', resolvedByName: false, error: `Proyecto no encontrado por nombre -> ${projectName}` };
+  }
+
+  return { projectId: resolvedProjectId, resolvedByName: true, error: null };
 }
 
 function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): string {
@@ -217,6 +265,8 @@ function MasterCsvImportTab() {
   async function confirmImport() {
     if (errors.length) return;
 
+    const { projectIdsByName, duplicateNames } = buildProjectLookup(rows);
+
     const invalidRows = rows.filter((row) => {
       const entity = normalizeEntity(row.entity);
       if (entity === 'usuario') {
@@ -232,15 +282,11 @@ function MasterCsvImportTab() {
       if (entity === 'tarea') {
         const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
         const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
-        if (!projectName && !taskName) {
-          return true;
-        }
-        if (!projectName) {
-          return true;
-        }
-        if (!taskName) {
-          return true;
-        }
+        const projectResolution = resolveProjectId(row, projectIdsByName, duplicateNames);
+
+        if (!taskName) return true;
+        if (!projectName) return true;
+        if (projectResolution.error) return true;
       }
       return false;
     });
@@ -252,10 +298,19 @@ function MasterCsvImportTab() {
         if (entity === 'tarea') {
           const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
           const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
-          let message = 'Falta nombre de la tarea';
-          if (!projectName && taskName) message = 'Falta nombre del proyecto';
-          if (!projectName && !taskName) message = 'Falta nombre del proyecto y nombre de la tarea';
-          return { ...row, status: 'error', message: message + ` | proyecto="${projectName || 'vacío'}" | tarea="${taskName || 'vacío'}"` };
+          const projectResolution = resolveProjectId(row, projectIdsByName, duplicateNames);
+
+          if (!taskName) {
+            return { ...row, status: 'error', message: `Falta nombre de la tarea | proyecto="${projectName || 'vacío'}" | tarea="vacío"` };
+          }
+          if (!projectName) {
+            return { ...row, status: 'error', message: `Falta nombre del proyecto | tarea="${taskName}"` };
+          }
+          if (projectResolution.error) {
+            return { ...row, status: 'error', message: `Proyecto no resuelto: ${projectResolution.error}` };
+          }
+
+          return { ...row, status: 'ok', message: `Proyecto resuelto por nombre: ${projectName}` };
         }
         return { ...row, status: 'error', message: 'Falta nombre del proyecto o nombre de la tarea' };
       }));
@@ -269,13 +324,41 @@ function MasterCsvImportTab() {
       const entity = normalizeEntity(row.entity);
       if (entity === 'usuario') payload.usuarios.push({ nombre: get(row, CSV_FIELD_ALIASES.nombre), email: get(row, CSV_FIELD_ALIASES.email), rol: normalizeRole(get(row, CSV_FIELD_ALIASES.rol)), tarifa_hora: get(row, CSV_FIELD_ALIASES.tarifa_hora) || '0' });
       if (entity === 'proyecto') payload.proyectos.push({ nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), categoria: normalizeCategory(get(row, CSV_FIELD_ALIASES.categoria)), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), linea_producto: get(row, CSV_FIELD_ALIASES.linea_producto), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), valor_estimado: get(row, CSV_FIELD_ALIASES.valor_estimado), cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), template_key: get(row, ['template_key']) });
-      if (entity === 'tarea') payload.tareas.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
-      if (entity === 'reunion') payload.reuniones.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
-      if (entity === 'comunicacion') payload.comunicaciones.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
-      if (entity === 'rol_proyecto') payload.roles_proyecto.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), tipo_raci: get(row, CSV_FIELD_ALIASES.tipo_raci) || get(row, CSV_FIELD_ALIASES.rol) });
-      if (entity === 'asignacion_tarea') payload.asignaciones_tarea.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
-      if (entity === 'asistente_reunion') payload.asistentes_reunion.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), reunion_nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
-      if (entity === 'registro_tiempo') payload.registros_tiempo.push({ proyecto_nombre: get(row, CSV_FIELD_ALIASES.proyecto_nombre), tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), inicio: get(row, CSV_FIELD_ALIASES.inicio), fin: get(row, CSV_FIELD_ALIASES.fin) });
+      if (entity === 'tarea') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.tareas.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), descripcion: get(row, CSV_FIELD_ALIASES.descripcion), estado: get(row, CSV_FIELD_ALIASES.estado) || 'no_iniciado', prioridad: normalizePriority(get(row, CSV_FIELD_ALIASES.prioridad)), fecha_inicio: get(row, CSV_FIELD_ALIASES.fecha_inicio), fecha_limite: get(row, CSV_FIELD_ALIASES.fecha_limite), tiempo_estimado_horas: get(row, CSV_FIELD_ALIASES.tiempo_estimado_horas), asignados_emails: get(row, CSV_FIELD_ALIASES.asignados_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+      }
+      if (entity === 'reunion') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.reuniones.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), tipo: get(row, CSV_FIELD_ALIASES.tipo), estado: get(row, CSV_FIELD_ALIASES.estado) || 'programada', fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), hora: get(row, CSV_FIELD_ALIASES.hora), notas: get(row, CSV_FIELD_ALIASES.notas), asistentes_emails: get(row, CSV_FIELD_ALIASES.asistentes_emails).split(/[;,]/).map((value) => value.trim()).filter(Boolean) });
+      }
+      if (entity === 'comunicacion') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.comunicaciones.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), tipo: get(row, CSV_FIELD_ALIASES.tipo), fecha: get(row, CSV_FIELD_ALIASES.fecha_inicio), resultado: get(row, CSV_FIELD_ALIASES.resultado), notas: get(row, CSV_FIELD_ALIASES.notas), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+      }
+      if (entity === 'rol_proyecto') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.roles_proyecto.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, proyecto_cliente: get(row, CSV_FIELD_ALIASES.proyecto_cliente), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), tipo_raci: get(row, CSV_FIELD_ALIASES.tipo_raci) || get(row, CSV_FIELD_ALIASES.rol) });
+      }
+      if (entity === 'asignacion_tarea') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.asignaciones_tarea.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+      }
+      if (entity === 'asistente_reunion') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.asistentes_reunion.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, reunion_nombre: get(row, CSV_FIELD_ALIASES.reunion_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email) });
+      }
+      if (entity === 'registro_tiempo') {
+        const projectName = get(row, CSV_FIELD_ALIASES.proyecto_nombre);
+        const resolvedProject = resolveProjectId(row, projectIdsByName, duplicateNames);
+        payload.registros_tiempo.push({ proyecto_id: resolvedProject.projectId || null, proyecto_nombre: projectName, tarea_nombre: get(row, CSV_FIELD_ALIASES.tarea_nombre), usuario_email: get(row, CSV_FIELD_ALIASES.usuario_email), inicio: get(row, CSV_FIELD_ALIASES.inicio), fin: get(row, CSV_FIELD_ALIASES.fin) });
+      }
     }
     const { data, error } = await supabase.rpc('importar_datos_csv', { p_payload: { ...payload, nombre_archivo: fileName } });
     setImporting(false);
