@@ -97,10 +97,18 @@ type CsvTemplateKey = 'campuspack' | 'schoolpack' | 'language' | 'soporte';
 type CsvTemplateType = 'implementacion' | 'soporte';
 
 interface CsvTask {
-  orden: number;
-  tarea: string;
-  tipo_registro: string;
-  proceso_sugerido: string;
+  template_key: string;
+  process_key: string;
+  process_name: string;
+  activity_key: string;
+  activity_name: string;
+  parent_process_key: string;
+  order: number;
+  duration_days: number | null;
+  start_offset_days: number;
+  default_priority: string;
+  suggested_role: string;
+  is_optional: boolean;
 }
 
 interface CsvTemplateConfig {
@@ -120,6 +128,7 @@ interface CsvTemplateState {
 interface CsvPreview {
   fileName: string;
   tasks: CsvTask[];
+  structure: Array<{ processKey: string; processName: string; parentProcessKey: string; activities: string[] }>;
   ignored: number;
   errors: string[];
 }
@@ -131,8 +140,7 @@ const CSV_TEMPLATES: CsvTemplateConfig[] = [
   { key: 'soporte', label: 'Soporte', tipo: 'soporte', producto: null },
 ];
 
-const IMPLEMENTATION_HEADERS = ['plantilla', 'producto', 'tipo_registro', 'proceso_sugerido', 'orden', 'tarea', 'proyectos_fuente', 'horas_observadas'];
-const SUPPORT_HEADERS = ['plantilla', 'tipo_registro', 'proceso_sugerido', 'orden', 'tarea', 'proyectos_fuente', 'frecuencia_historica', 'horas_observadas'];
+const SCHEDULE_REQUIRED_HEADERS = ['template_key', 'process_key', 'process_name', 'activity_key', 'activity_name', 'order'];
 
 function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
   const [templates, setTemplates] = useState<Partial<Record<CsvTemplateKey, CsvTemplateState>>>({});
@@ -186,46 +194,63 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
       transformHeader: (header) => header.trim().replace(/^\uFEFF/, ''),
       complete: (result) => {
         const headers = (result.meta.fields ?? []).map((header) => header.trim());
-        const expected = config.tipo === 'soporte'
-          ? SUPPORT_HEADERS
-          : config.key === 'language'
-            ? IMPLEMENTATION_HEADERS.filter((header) => header !== 'horas_observadas')
-            : IMPLEMENTATION_HEADERS;
-        const missing = expected.filter((header) => !headers.includes(header));
+        const missing = SCHEDULE_REQUIRED_HEADERS.filter((header) => !headers.includes(header));
         const errors = result.errors.map((error) => `Fila ${error.row ?? '?'}: ${error.message}`);
-        const detectedType = headers.includes('producto') ? 'implementacion' : headers.includes('frecuencia_historica') ? 'soporte' : null;
-        if (detectedType !== config.tipo) errors.unshift('El encabezado no corresponde a esta plantilla.');
-        if (config.key === 'language' && !headers.includes('horas_observadas') && !headers.includes('observacion')) {
-          errors.unshift('Falta la columna "horas_observadas" o "observacion".');
-        }
+        const expectedKey = config.tipo === 'soporte' ? 'support' : `implementation_${config.producto?.toLowerCase()}`;
         if (missing.length > 0) errors.unshift(`Faltan columnas obligatorias: ${missing.join(', ')}`);
         if (headers.length === 0) errors.unshift('El archivo está vacío o no tiene encabezado.');
 
         let ignored = 0;
         const tasks: CsvTask[] = [];
         result.data.forEach((row, index) => {
-          const tipoRegistro = (row.tipo_registro ?? '').trim();
-          const tarea = row.tarea ?? '';
-          if (tipoRegistro.toUpperCase() === 'INFO' || tarea.trim() === '') {
+          const templateKey = (row.template_key ?? '').trim();
+          const processKey = (row.process_key ?? '').trim();
+          const processName = (row.process_name ?? '').trim();
+          const activityKey = (row.activity_key ?? '').trim();
+          const activityName = row.activity_name ?? '';
+          if (!templateKey && !processKey && !activityKey && !activityName.trim()) {
             ignored += 1;
             return;
           }
-          const rawOrder = (row.orden ?? '').trim();
-          const order = rawOrder === '' ? index + 1 : Number(rawOrder);
-          if (!Number.isInteger(order)) {
-            errors.push(`Fila ${index + 2}: "orden" debe ser un entero.`);
+          if (templateKey !== expectedKey) {
+            errors.push(`Fila ${index + 2}: template_key debe ser "${expectedKey}".`);
             return;
           }
+          if (!processKey || !processName || !activityKey || !activityName.trim()) {
+            errors.push(`Fila ${index + 2}: cada actividad debe tener proceso y actividad.`);
+            return;
+          }
+          const order = Number((row.order ?? '').trim());
+          const duration = (row.duration_days ?? '').trim();
+          const offset = (row.start_offset_days ?? '').trim();
+          if (!Number.isInteger(order) || order < 0) errors.push(`Fila ${index + 2}: "order" debe ser un entero no negativo.`);
+          if (duration !== '' && (!Number.isInteger(Number(duration)) || Number(duration) < 0)) errors.push(`Fila ${index + 2}: "duration_days" debe ser un entero no negativo.`);
+          if (offset !== '' && (!Number.isInteger(Number(offset)) || Number(offset) < 0)) errors.push(`Fila ${index + 2}: "start_offset_days" debe ser un entero no negativo.`);
+          if (errors.some((error) => error.startsWith(`Fila ${index + 2}:`))) return;
           tasks.push({
-            orden: order,
-            tarea,
-            tipo_registro: row.tipo_registro ?? '',
-            proceso_sugerido: row.proceso_sugerido ?? '',
+            template_key: templateKey,
+            process_key: processKey,
+            process_name: processName,
+            activity_key: activityKey,
+            activity_name: activityName,
+            parent_process_key: (row.parent_process_key ?? '').trim(),
+            order,
+            duration_days: duration === '' ? null : Number(duration),
+            start_offset_days: offset === '' ? 0 : Number(offset),
+            default_priority: normalizePriority(row.default_priority),
+            suggested_role: (row.suggested_role ?? '').trim(),
+            is_optional: ['true', '1', 'si', 'sí'].includes((row.is_optional ?? '').trim().toLowerCase()),
           });
         });
-        setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks, ignored, errors } }));
+        const structure = Array.from(new Map(tasks.map((task) => [task.process_key, task])).values()).map((process) => ({
+          processKey: process.process_key,
+          processName: process.process_name,
+          parentProcessKey: process.parent_process_key,
+          activities: tasks.filter((task) => task.process_key === process.process_key).sort((a, b) => a.order - b.order).map((task) => task.activity_name),
+        }));
+        setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks, structure, ignored, errors } }));
       },
-      error: (error) => setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks: [], ignored: 0, errors: [error.message] } })),
+      error: (error) => setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks: [], structure: [], ignored: 0, errors: [error.message] } })),
     });
   }
 
@@ -293,8 +318,18 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
               {preview && (
                 <div className="rounded-lg bg-[var(--bg-base)] p-3 text-sm space-y-2">
                   <p className="font-medium text-[var(--text-primary)]">{preview.fileName}</p>
-                  <p className="text-[var(--text-secondary)]">{preview.tasks.length} tareas válidas · {preview.ignored} filas ignoradas</p>
-                  {preview.tasks.length === 0 && preview.errors.length === 0 && <p className="text-info">Esta plantilla no tiene tareas predefinidas; el proyecto se creará sin tareas iniciales.</p>}
+                  <p className="text-[var(--text-secondary)]">{preview.structure.length} procesos · {preview.tasks.length} actividades · {preview.ignored} filas vacías ignoradas</p>
+                  {preview.tasks.length === 0 && preview.errors.length === 0 && <p className="text-info">Esta plantilla no tiene actividades; el proyecto se creará sin cronograma inicial.</p>}
+                  {preview.structure.length > 0 && (
+                    <div className="max-h-48 overflow-y-auto border-l border-[var(--border)] pl-3 space-y-3">
+                      {preview.structure.map((process) => (
+                        <div key={process.processKey}>
+                          <p className="font-medium text-[var(--text-primary)]">{process.processName}</p>
+                          {process.activities.map((activity) => <p key={`${process.processKey}-${activity}`} className="text-xs text-[var(--text-secondary)] pl-3">• {activity}</p>)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {preview.errors.map((message) => <p key={message} className="text-danger">{message}</p>)}
                   <button
                     onClick={() => saveTemplate(config)}
@@ -331,6 +366,17 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
       )}
     </div>
   );
+}
+
+function normalizePriority(value: string | undefined) {
+  const normalized = (value ?? '').trim().toLowerCase();
+  const priorities: Record<string, string> = {
+    baja: 'baja', low: 'baja',
+    media: 'media', medium: 'media', normal: 'media',
+    alta: 'alta', high: 'alta',
+    urgente: 'urgente', urgent: 'urgente',
+  };
+  return priorities[normalized] ?? 'media';
 }
 
 function ImportTab() {

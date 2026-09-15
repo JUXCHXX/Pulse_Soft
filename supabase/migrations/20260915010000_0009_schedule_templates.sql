@@ -210,7 +210,7 @@ CREATE OR REPLACE FUNCTION limpiar_plantillas_csv()
 RETURNS void AS $$
 BEGIN
   IF auth_rol() <> 'pmo' THEN RAISE EXCEPTION 'Solo la PMO puede limpiar plantillas'; END IF;
-  DELETE FROM plantillas_csv;
-  DELETE FROM plantillas_tareas;
+  DELETE FROM plantillas_csv WHERE true;
+  DELETE FROM plantillas_tareas WHERE true;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;

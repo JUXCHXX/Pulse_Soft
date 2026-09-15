@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -9,9 +9,7 @@ import {
   Calendar,
   DollarSign,
   Clock,
-  Users,
   Plus,
-  MoreVertical,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
@@ -33,16 +31,17 @@ import {
 import type { Proyecto, Tarea, Usuario, ProyectoRol } from '@/lib/types';
 
 type Tab = 'resumen' | 'tareas' | 'cronograma' | 'archivos' | 'discusiones' | 'reportes';
+type ProyectoProceso = { id: string; proyecto_id: string; nombre: string; orden: number };
 
 export function ProyectoDetalle() {
   const { id } = useParams();
   const { usuario } = useAuth();
   const isPMO = usuario?.rol === 'pmo';
-  const isDireccion = usuario?.rol === 'direccion';
   const canEdit = isPMO;
 
   const [proyecto, setProyecto] = useState<Proyecto | null>(null);
   const [tareas, setTareas] = useState<(Tarea & { tarea_asignados: { usuarios: { nombre: string } | null }[] })[]>([]);
+  const [procesos, setProcesos] = useState<ProyectoProceso[]>([]);
   const [roles, setRoles] = useState<(ProyectoRol & { usuarios: Usuario | null })[]>([]);
   const [resumen, setResumen] = useState<{
     total_tareas: number;
@@ -54,20 +53,20 @@ export function ProyectoDetalle() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('resumen');
 
-  useEffect(() => {
-    if (!id) return;
-    loadData();
-  }, [id]);
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
-    const [resProy, resTareas, resRoles, resResumen] = await Promise.all([
+    const [resProy, resTareas, resProcesos, resRoles, resResumen] = await Promise.all([
       supabase.from('proyectos').select('*').eq('id', id!).maybeSingle(),
       supabase
         .from('tareas')
         .select('*, tarea_asignados(usuarios(nombre))')
         .eq('proyecto_id', id!)
         .order('fecha_limite', { ascending: true, nullsFirst: false }),
+      supabase
+        .from('proyecto_procesos')
+        .select('*')
+        .eq('proyecto_id', id!)
+        .order('orden', { ascending: true }),
       supabase
         .from('proyecto_roles')
         .select('*, usuarios(*)')
@@ -77,10 +76,16 @@ export function ProyectoDetalle() {
 
     setProyecto(resProy.data as Proyecto | null);
     setTareas((resTareas.data as typeof tareas) ?? []);
+    setProcesos((resProcesos.data as ProyectoProceso[]) ?? []);
     setRoles((resRoles.data as typeof roles) ?? []);
     setResumen(resResumen.data as typeof resumen);
     setLoading(false);
-  }
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    void loadData();
+  }, [id, loadData]);
 
   if (loading) {
     return (
@@ -104,8 +109,6 @@ export function ProyectoDetalle() {
   const estado = getEstadoProyecto(proyecto.estado);
   const prioridad = getPrioridad(proyecto.prioridad);
   const categoria = getCategoria(proyecto.categoria);
-  const miembros = roles.map((r) => r.usuarios).filter(Boolean) as Usuario[];
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -273,8 +276,14 @@ export function ProyectoDetalle() {
 
           {tab === 'cronograma' && (
             <div className="card p-6">
-              <h3 className="text-sm font-semibold text-[var(--text-secondary)] mb-4">Cronograma (Gantt)</h3>
-              <GanttView tareas={tareas} />
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-secondary)]">Cronograma del proyecto</h3>
+                  <p className="text-xs text-[var(--text-secondary)] mt-1">{proyecto.template_key ?? 'Sin plantilla'} · {procesos.length} procesos · {tareas.length} actividades</p>
+                </div>
+                <Badge color="bg-info/20 text-info">{Math.round(resumen?.progreso_pct ?? 0)}% avance</Badge>
+              </div>
+              <ScheduleView procesos={procesos} tareas={tareas} />
             </div>
           )}
 
@@ -414,64 +423,45 @@ function InfoItem({ icon: Icon, label, value }: { icon: typeof Calendar; label: 
   );
 }
 
-function GanttView({ tareas }: { tareas: Tarea[] }) {
-  if (tareas.length === 0) {
-    return <p className="text-sm text-[var(--text-secondary)] text-center py-8">Sin tareas para mostrar</p>;
+function ScheduleView({ procesos, tareas }: { procesos: ProyectoProceso[]; tareas: (Tarea & { tarea_asignados?: { usuarios: { nombre: string } | null }[] })[] }) {
+  if (procesos.length === 0) {
+    return <p className="text-sm text-[var(--text-secondary)] text-center py-8">Este proyecto no tiene procesos de cronograma instanciados.</p>;
   }
-
-  const today = new Date();
-  const dates = tareas
-    .filter((t) => t.fecha_inicio || t.fecha_limite)
-    .flatMap((t) => [t.fecha_inicio, t.fecha_limite])
-    .filter(Boolean) as string[];
-
-  if (dates.length === 0) {
-    return <p className="text-sm text-[var(--text-secondary)] text-center py-8">Las tareas no tienen fechas asignadas</p>;
-  }
-
-  const minDate = new Date(Math.min(...dates.map((d) => new Date(d + 'T00:00:00').getTime())));
-  const maxDate = new Date(Math.max(...dates.map((d) => new Date(d + 'T00:00:00').getTime())));
-  const totalDays = Math.max(1, Math.ceil((maxDate.getTime() - minDate.getTime()) / 86400000));
 
   return (
-    <div className="space-y-2">
-      {tareas
-        .filter((t) => t.fecha_inicio || t.fecha_limite)
-        .map((t) => {
-          const start = t.fecha_inicio ? new Date(t.fecha_inicio + 'T00:00:00') : new Date(t.fecha_limite! + 'T00:00:00');
-          const end = t.fecha_limite ? new Date(t.fecha_limite + 'T00:00:00') : start;
-          const startOffset = Math.max(0, Math.floor((start.getTime() - minDate.getTime()) / 86400000));
-          const duration = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86400000) + 1);
-          const leftPct = (startOffset / totalDays) * 100;
-          const widthPct = Math.min(100 - leftPct, (duration / totalDays) * 100);
-          const est = getEstadoTarea(t.estado);
-
-          return (
-            <div key={t.id} className="flex items-center gap-3">
-              <div className="w-40 text-sm text-[var(--text-primary)] truncate shrink-0">{t.nombre}</div>
-              <div className="flex-1 relative h-7 bg-[var(--bg-base)] rounded-lg">
-                {/* Today line */}
-                {today >= minDate && today <= maxDate && (
-                  <div
-                    className="absolute top-0 bottom-0 w-0.5 bg-danger z-10"
-                    style={{ left: `${((today.getTime() - minDate.getTime()) / 86400000 / totalDays) * 100}%` }}
-                  />
-                )}
-                <div
-                  className="absolute top-1 bottom-1 rounded-md flex items-center px-2"
-                  style={{
-                    left: `${leftPct}%`,
-                    width: `${widthPct}%`,
-                    backgroundColor: est.value === 'hecho' ? 'rgba(0,223,129,0.25)' : 'rgba(44,194,149,0.3)',
-                    border: `1px solid ${est.value === 'hecho' ? '#00DF81' : '#2CC295'}`,
-                  }}
-                >
-                  <span className="text-xs font-medium text-[var(--text-primary)] truncate">{est.label}</span>
-                </div>
-              </div>
+    <div className="space-y-4">
+      {procesos.map((proceso) => {
+        const processTasks = tareas
+          .filter((task) => task.proceso_id === proceso.id)
+          .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
+        const completed = processTasks.filter((task) => task.estado === 'hecho').length;
+        return (
+          <section key={proceso.id} className="border border-[var(--border)] rounded-lg overflow-hidden">
+            <div className="flex items-center justify-between gap-3 bg-[var(--bg-base)] px-4 py-3">
+              <h4 className="text-sm font-semibold text-[var(--text-primary)]">{proceso.nombre}</h4>
+              <span className="text-xs text-[var(--text-secondary)]">{completed}/{processTasks.length} completadas</span>
             </div>
-          );
-        })}
+            <div className="divide-y divide-[var(--border)]">
+              {processTasks.length === 0 ? (
+                <p className="px-4 py-3 text-xs text-[var(--text-secondary)]">Sin actividades</p>
+              ) : processTasks.map((task) => {
+                const assignees = task.tarea_asignados?.map((item) => item.usuarios?.nombre).filter(Boolean).join(', ');
+                return (
+                  <div key={task.id} className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto_auto] gap-2 items-center px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="text-sm text-[var(--text-primary)] truncate">{task.nombre}</p>
+                      {assignees && <p className="text-xs text-[var(--text-secondary)]">{assignees}</p>}
+                    </div>
+                    <span className="text-xs text-[var(--text-secondary)]">{formatDate(task.fecha_inicio)} - {formatDate(task.fecha_limite)}</span>
+                    <Badge color={getEstadoTarea(task.estado).color}>{getEstadoTarea(task.estado).label}</Badge>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
+
