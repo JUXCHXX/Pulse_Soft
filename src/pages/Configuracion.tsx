@@ -8,6 +8,7 @@ import {
   FileUp,
   Loader2,
   Palette,
+    Trash2,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
@@ -100,9 +101,6 @@ interface CsvTask {
   tarea: string;
   tipo_registro: string;
   proceso_sugerido: string;
-  proyectos_fuente: string;
-  horas_observadas: string;
-  frecuencia_historica: number | null;
 }
 
 interface CsvTemplateConfig {
@@ -116,6 +114,7 @@ interface CsvTemplateState {
   nombre_archivo: string;
   cargado_en: string;
   tareas: number;
+  procesos: number;
 }
 
 interface CsvPreview {
@@ -139,19 +138,45 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
   const [templates, setTemplates] = useState<Partial<Record<CsvTemplateKey, CsvTemplateState>>>({});
   const [previews, setPreviews] = useState<Partial<Record<CsvTemplateKey, CsvPreview>>>({});
   const [saving, setSaving] = useState<CsvTemplateKey | null>(null);
+  const [showCleanModal, setShowCleanModal] = useState(false);
+  const [cleanText, setCleanText] = useState('');
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanError, setCleanError] = useState<string | null>(null);
 
   useEffect(() => {
     loadTemplates();
   }, []);
 
   async function loadTemplates() {
-    const { data } = await supabase.from('plantillas_csv').select('tipo, producto, nombre_archivo, cargado_en, plantillas_csv_tareas(count)');
+    const { data } = await supabase.from('plantillas_csv').select('tipo, producto, nombre_archivo, cargado_en, plantillas_csv_tareas(count), plantillas_csv_procesos(count)');
     const next: Partial<Record<CsvTemplateKey, CsvTemplateState>> = {};
-    for (const row of (data ?? []) as unknown as Array<{ tipo: CsvTemplateType; producto: string | null; nombre_archivo: string; cargado_en: string; plantillas_csv_tareas: Array<{ count: number }> }>) {
+    for (const row of (data ?? []) as unknown as Array<{ tipo: CsvTemplateType; producto: string | null; nombre_archivo: string; cargado_en: string; plantillas_csv_tareas: Array<{ count: number }>; plantillas_csv_procesos: Array<{ count: number }> }>) {
       const key = row.tipo === 'soporte' ? 'soporte' : row.producto?.toLowerCase() as CsvTemplateKey;
-      if (key) next[key] = { nombre_archivo: row.nombre_archivo, cargado_en: row.cargado_en, tareas: row.plantillas_csv_tareas?.[0]?.count ?? 0 };
+      if (key) next[key] = {
+        nombre_archivo: row.nombre_archivo,
+        cargado_en: row.cargado_en,
+        tareas: row.plantillas_csv_tareas?.[0]?.count ?? 0,
+        procesos: row.plantillas_csv_procesos?.[0]?.count ?? 0,
+      };
     }
     setTemplates(next);
+  }
+
+  async function cleanTemplates() {
+    if (cleanText !== 'LIMPIAR') return;
+    setCleaning(true);
+    setCleanError(null);
+    const { error } = await supabase.rpc('limpiar_plantillas_csv');
+    if (error) {
+      setCleanError(error.message);
+      setCleaning(false);
+      return;
+    }
+    setTemplates({});
+    setPreviews({});
+    setCleanText('');
+    setShowCleanModal(false);
+    setCleaning(false);
   }
 
   function parseCsv(config: CsvTemplateConfig, file: File) {
@@ -191,20 +216,11 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
             errors.push(`Fila ${index + 2}: "orden" debe ser un entero.`);
             return;
           }
-          const frequency = (row.frecuencia_historica ?? '').trim();
-          const parsedFrequency = frequency === '' ? null : Number(frequency);
-          if (parsedFrequency !== null && !Number.isInteger(parsedFrequency)) {
-            errors.push(`Fila ${index + 2}: "frecuencia_historica" debe ser un entero.`);
-            return;
-          }
           tasks.push({
             orden: order,
             tarea,
             tipo_registro: row.tipo_registro ?? '',
             proceso_sugerido: row.proceso_sugerido ?? '',
-            proyectos_fuente: row.proyectos_fuente ?? '',
-            horas_observadas: row.horas_observadas ?? '',
-            frecuencia_historica: parsedFrequency,
           });
         });
         setPreviews((current) => ({ ...current, [config.key]: { fileName: file.name, tasks, ignored, errors } }));
@@ -239,8 +255,15 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-base font-semibold text-[var(--text-primary)]">Plantillas CSV</h3>
-        <p className="text-sm text-[var(--text-secondary)]">Carga una plantilla por línea de producto. Una nueva carga reemplaza la anterior.</p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-base font-semibold text-[var(--text-primary)]">Plantillas de cronograma</h3>
+            <p className="text-sm text-[var(--text-secondary)]">Cada plantilla es un molde de procesos y actividades para nuevos proyectos. Una nueva carga reemplaza la anterior.</p>
+          </div>
+          <button onClick={() => setShowCleanModal(true)} className="btn-secondary text-sm flex items-center gap-2 text-danger shrink-0">
+            <Trash2 className="w-4 h-4" /> Limpiar datos
+          </button>
+        </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {CSV_TEMPLATES.map((config) => {
@@ -252,7 +275,7 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
                 <div>
                   <h4 className="font-semibold text-[var(--text-primary)]">{config.label}</h4>
                   <p className="text-xs text-[var(--text-secondary)] mt-1">
-                    {current ? `${current.tareas} tareas · última carga ${new Date(current.cargado_en).toLocaleDateString('es-MX')}` : 'Sin plantilla cargada'}
+                    {current ? `${current.procesos} procesos · ${current.tareas} actividades · última carga ${new Date(current.cargado_en).toLocaleDateString('es-MX')}` : 'Sin plantilla cargada'}
                   </p>
                 </div>
                 <FileSpreadsheet className="w-5 h-5 text-caribbean-green shrink-0" />
@@ -287,6 +310,25 @@ function CsvTemplatesTab({ isPMO }: { isPMO: boolean }) {
           );
         })}
       </div>
+      {showCleanModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="card p-6 w-full max-w-md space-y-4">
+            <h3 className="text-lg font-bold text-[var(--text-primary)]">¿Limpiar datos de las plantillas?</h3>
+            <p className="text-sm text-[var(--text-secondary)]">
+              Esta acción elimina únicamente las plantillas y sus configuraciones. No elimina proyectos, tareas reales, usuarios, reuniones ni otros datos del sistema.
+            </p>
+            <p className="text-sm text-[var(--text-secondary)]">Escribe <strong>LIMPIAR</strong> para confirmar.</p>
+            <input value={cleanText} onChange={(event) => setCleanText(event.target.value)} className="input-field" placeholder="LIMPIAR" autoFocus />
+            {cleanError && <p className="text-sm text-danger">{cleanError}</p>}
+            <div className="flex justify-end gap-3">
+              <button onClick={() => { setShowCleanModal(false); setCleanText(''); setCleanError(null); }} className="btn-secondary text-sm">Cancelar</button>
+              <button onClick={cleanTemplates} disabled={cleanText !== 'LIMPIAR' || cleaning} className="btn-primary text-sm flex items-center gap-2">
+                {cleaning && <Loader2 className="w-4 h-4 animate-spin" />} Confirmar limpieza
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

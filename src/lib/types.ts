@@ -45,6 +45,7 @@ export interface Proyecto {
   fecha_fin: string | null;
   valor_estimado: number | null;
   cliente: string | null;
+  template_key?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -54,6 +55,7 @@ export interface Tarea {
   id: string;
   proyecto_id: string;
   plantilla_origen_id: string | null;
+  proceso_id?: string | null;
   nombre: string;
   descripcion: string | null;
   estado: EstadoTarea;
@@ -62,6 +64,9 @@ export interface Tarea {
   fecha_limite: string | null;
   fecha_finalizacion: string | null;
   tiempo_estimado_horas: number | null;
+  orden?: number | null;
+  duracion_ideal_dias?: number | null;
+  rol_sugerido?: string | null;
   created_at: string;
   updated_at: string;
 }

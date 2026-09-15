@@ -203,9 +203,36 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [templateSummary, setTemplateSummary] = useState<{ exists: boolean; template_key: string; tasks: number; processes: number; structure: Array<{ nombre: string; actividades: number }> } | null>(null);
+  const [showSchedulePreview, setShowSchedulePreview] = useState(false);
+
+  useEffect(() => {
+    setShowSchedulePreview(false);
+    setTemplateSummary(null);
+    if (form.categoria === 'implementacion' && !form.producto) return;
+    void supabase.rpc('obtener_plantilla_csv_resumen', {
+      p_tipo: form.categoria,
+      p_producto: form.categoria === 'implementacion' ? form.producto : null,
+    }).then(({ data, error: summaryError }) => {
+      if (!summaryError) setTemplateSummary(data as { exists: boolean; template_key: string; tasks: number; processes: number; structure: Array<{ nombre: string; actividades: number }> });
+    });
+  }, [form.categoria, form.producto]);
+
+  async function loadTemplateSummary() {
+    const { data, error: summaryError } = await supabase.rpc('obtener_plantilla_csv_resumen', {
+      p_tipo: form.categoria,
+      p_producto: form.categoria === 'implementacion' ? form.producto : null,
+    });
+    if (!summaryError) setTemplateSummary(data as { exists: boolean; template_key: string; tasks: number; processes: number; structure: Array<{ nombre: string; actividades: number }> });
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!showSchedulePreview) {
+      await loadTemplateSummary();
+      setShowSchedulePreview(true);
+      return;
+    }
     setSaving(true);
     setError(null);
     const { data, error } = await supabase
@@ -217,6 +244,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         estado: form.estado,
         prioridad: form.prioridad,
         linea_producto: form.categoria === 'implementacion' ? form.producto : null,
+        template_key: form.categoria === 'soporte' ? 'support' : `implementation_${form.producto.toLowerCase()}`,
         fecha_inicio: form.fecha_inicio || null,
         fecha_limite: form.fecha_limite || null,
         valor_estimado: form.valor_estimado ? Number(form.valor_estimado) : null,
@@ -373,13 +401,34 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               placeholder="0.00"
             />
           </div>
+          {showSchedulePreview && templateSummary && (
+            <div className="rounded-lg bg-[var(--bg-base)] p-4 space-y-2">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">Vista previa del cronograma</p>
+              {templateSummary.exists ? (
+                <div>
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    Se utilizará <strong>{templateSummary.template_key}</strong>: {templateSummary.processes} procesos y {templateSummary.tasks} actividades. Al generar, se copiará esta estructura al proyecto; la plantilla original permanecerá intacta.
+                  </p>
+                  <div className="max-h-32 overflow-y-auto space-y-1 pt-1">
+                    {templateSummary.structure.map((process) => (
+                      <div key={process.nombre} className="flex justify-between gap-3 text-xs text-[var(--text-secondary)]">
+                        <span>{process.nombre}</span><span>{process.actividades} actividades</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-info">No hay plantilla cargada para esta combinación. El proyecto se creará sin cronograma inicial.</p>
+              )}
+            </div>
+          )}
           {error && <p className="text-sm text-danger">{error}</p>}
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="btn-secondary text-sm">
+            <button type="button" onClick={showSchedulePreview ? () => setShowSchedulePreview(false) : onClose} className="btn-secondary text-sm">
               Cancelar
             </button>
             <button type="submit" disabled={saving} className="btn-primary text-sm">
-              {saving ? 'Creando…' : 'Crear proyecto'}
+              {saving ? 'Generando cronograma…' : showSchedulePreview ? 'Generar cronograma' : 'Vista previa'}
             </button>
           </div>
         </form>
