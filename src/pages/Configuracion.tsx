@@ -74,11 +74,36 @@ function normalizeEntity(value: string): ImportEntity | null {
   return IMPORT_ENTITY_ALIASES[normalized] ?? null;
 }
 
+function normalizeCsvKey(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
 function pickCsvValue(row: Record<string, string>, aliases: readonly string[]): string {
+  const normalizedEntries = Object.entries(row).reduce<Record<string, string>>((acc, [key, value]) => {
+    acc[normalizeCsvKey(key)] = value ?? '';
+    return acc;
+  }, {});
+
   for (const alias of aliases) {
-    const value = row[alias];
+    const normalizedAlias = normalizeCsvKey(alias);
+    const value = normalizedEntries[normalizedAlias];
     if (typeof value === 'string' && value.trim()) return value.trim();
+    const exactValue = row[alias];
+    if (typeof exactValue === 'string' && exactValue.trim()) return exactValue.trim();
   }
+
+  for (const [key, value] of Object.entries(row)) {
+    const normalizedKey = normalizeCsvKey(key);
+    if (aliases.some((alias) => normalizeCsvKey(alias) === normalizedKey) && typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
   return '';
 }
 
@@ -195,15 +220,27 @@ function MasterCsvImportTab() {
     const invalidRows = rows.filter((row) => {
       const entity = normalizeEntity(row.entity);
       if (entity === 'usuario') {
-        return !pickCsvValue(row.data, CSV_FIELD_ALIASES.email) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.nombre);
+        const email = pickCsvValue(row.data, CSV_FIELD_ALIASES.email);
+        const nombre = pickCsvValue(row.data, CSV_FIELD_ALIASES.nombre);
+        return !email || !nombre;
       }
       if (entity === 'proyecto') {
-        return !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre) || !pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_cliente);
+        const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
+        const client = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_cliente);
+        return !projectName || !client;
       }
       if (entity === 'tarea') {
         const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
         const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
-        return !projectName || !taskName;
+        if (!projectName && !taskName) {
+          return true;
+        }
+        if (!projectName) {
+          return true;
+        }
+        if (!taskName) {
+          return true;
+        }
       }
       return false;
     });
@@ -211,6 +248,15 @@ function MasterCsvImportTab() {
     if (invalidRows.length > 0) {
       setRows((current) => current.map((row) => {
         if (!invalidRows.some((invalidRow) => invalidRow.id === row.id)) return row;
+        const entity = normalizeEntity(row.entity);
+        if (entity === 'tarea') {
+          const projectName = pickCsvValue(row.data, CSV_FIELD_ALIASES.proyecto_nombre);
+          const taskName = pickCsvValue(row.data, CSV_FIELD_ALIASES.tarea_nombre);
+          let message = 'Falta nombre de la tarea';
+          if (!projectName && taskName) message = 'Falta nombre del proyecto';
+          if (!projectName && !taskName) message = 'Falta nombre del proyecto y nombre de la tarea';
+          return { ...row, status: 'error', message: message + ` | proyecto="${projectName || 'vacío'}" | tarea="${taskName || 'vacío'}"` };
+        }
         return { ...row, status: 'error', message: 'Falta nombre del proyecto o nombre de la tarea' };
       }));
       return;
