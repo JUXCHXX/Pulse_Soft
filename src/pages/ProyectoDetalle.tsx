@@ -55,6 +55,8 @@ export function ProyectoDetalle() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('resumen');
   const [showNewActivity, setShowNewActivity] = useState(false);
+  const [showEditProject, setShowEditProject] = useState(false);
+  const [assigningTask, setAssigningTask] = useState<Tarea | null>(null);
   const [newActivity, setNewActivity] = useState({ nombre: '', procesoId: '', duracion: '' });
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -189,7 +191,7 @@ export function ProyectoDetalle() {
                 <Share2 className="w-4 h-4" />
                 Compartir
               </button>
-              <button className="btn-primary text-sm flex items-center gap-1.5">
+              <button onClick={() => setShowEditProject(true)} className="btn-primary text-sm flex items-center gap-1.5">
                 <Edit3 className="w-4 h-4" />
                 Editar
               </button>
@@ -304,6 +306,7 @@ export function ProyectoDetalle() {
                           </td>
                           {canEdit && (
                             <td className="py-3 text-right">
+                              <button onClick={() => setAssigningTask(t)} className="text-xs text-[var(--accent)] mr-3">Asignar</button>
                               <button onClick={() => void deleteActivity(t.id)} className="text-[var(--text-secondary)] hover:text-danger" title="Eliminar actividad">
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -382,6 +385,8 @@ export function ProyectoDetalle() {
               </form>
             </div>
           )}
+          {showEditProject && canEdit && <EditProjectModal project={proyecto} onClose={() => setShowEditProject(false)} onSaved={async () => { setShowEditProject(false); await loadData(); }} />}
+          {assigningTask && canEdit && <AssignTaskModal task={assigningTask} onClose={() => setAssigningTask(null)} onSaved={async () => { setAssigningTask(null); await loadData(); }} />}
         </div>
 
         {/* Right panel */}
@@ -471,6 +476,28 @@ export function ProyectoDetalle() {
       </div>
     </div>
   );
+}
+
+function EditProjectModal({ project, onClose, onSaved }: { project: Proyecto; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [form, setForm] = useState({ nombre: project.nombre, cliente: project.cliente ?? '', categoria: project.categoria, producto: project.linea_producto ?? '', estado: project.estado, prioridad: project.prioridad, fecha_inicio: project.fecha_inicio ?? '', fecha_limite: project.fecha_limite ?? '', valor_estimado: project.valor_estimado?.toString() ?? '', descripcion: project.descripcion ?? '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function save(event: React.FormEvent) {
+    event.preventDefault(); setSaving(true); setError(null);
+    const { error: saveError } = await supabase.from('proyectos').update({ nombre: form.nombre.trim(), cliente: form.cliente.trim() || null, categoria: form.categoria, linea_producto: form.categoria === 'implementacion' ? form.producto || null : null, estado: form.estado, prioridad: form.prioridad, fecha_inicio: form.fecha_inicio || null, fecha_limite: form.fecha_limite || null, valor_estimado: form.valor_estimado ? Number(form.valor_estimado) : null, descripcion: form.descripcion.trim() || null }).eq('id', project.id);
+    if (saveError) { setError(saveError.message); setSaving(false); return; }
+    await onSaved();
+  }
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><form onSubmit={save} className="card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto space-y-4"><h3 className="text-lg font-bold text-[var(--text-primary)]">Editar proyecto</h3><input required value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} className="input-field" placeholder="Nombre" /><input value={form.cliente} onChange={(e) => setForm({ ...form, cliente: e.target.value })} className="input-field" placeholder="Cliente" /><textarea value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} className="input-field" placeholder="Descripción" rows={3} /><div className="grid grid-cols-2 gap-3"><select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value as Proyecto['categoria'] })} className="input-field"><option value="implementacion">Implementación</option><option value="soporte">Soporte</option></select><select value={form.producto} disabled={form.categoria === 'soporte'} onChange={(e) => setForm({ ...form, producto: e.target.value })} className="input-field"><option value="">Producto</option><option value="Campuspack">Campuspack</option><option value="Schoolpack">Schoolpack</option><option value="Language">Language</option></select><select value={form.estado} onChange={(e) => setForm({ ...form, estado: e.target.value as Proyecto['estado'] })} className="input-field"><option value="no_iniciado">No iniciado</option><option value="en_progreso">En progreso</option><option value="en_espera">En espera</option><option value="completado">Completado</option><option value="cancelado">Cancelado</option></select><select value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value as Proyecto['prioridad'] })} className="input-field"><option value="baja">Baja</option><option value="media">Media</option><option value="alta">Alta</option><option value="urgente">Urgente</option></select><input type="date" value={form.fecha_inicio} onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })} className="input-field" /><input type="date" value={form.fecha_limite} onChange={(e) => setForm({ ...form, fecha_limite: e.target.value })} className="input-field" /><input type="number" value={form.valor_estimado} onChange={(e) => setForm({ ...form, valor_estimado: e.target.value })} className="input-field" placeholder="Presupuesto" /></div>{error && <p className="text-sm text-danger">{error}</p>}<div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="btn-secondary text-sm">Cancelar</button><button disabled={saving} className="btn-primary text-sm">{saving ? 'Guardando…' : 'Guardar cambios'}</button></div></form></div>;
+}
+
+function AssignTaskModal({ task, onClose, onSaved }: { task: Tarea; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [users, setUsers] = useState<Usuario[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { void Promise.all([supabase.from('usuarios').select('*').eq('activo', true).order('nombre'), supabase.from('tarea_asignados').select('usuario_id').eq('tarea_id', task.id)]).then(([userResult, assignedResult]) => { setUsers((userResult.data as Usuario[]) ?? []); setSelected((assignedResult.data ?? []).map((row) => row.usuario_id)); }); }, [task.id]);
+  async function save() { const { error: saveError } = await supabase.rpc('asignar_tarea_a_usuarios', { p_tarea_id: task.id, p_usuario_ids: selected }); if (saveError) setError(saveError.message); else await onSaved(); }
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="card p-6 w-full max-w-md space-y-4"><h3 className="text-lg font-bold text-[var(--text-primary)]">Asignar consultores</h3><p className="text-sm text-[var(--text-secondary)]">{task.nombre}</p><div className="max-h-64 overflow-y-auto space-y-2">{users.map((user) => <label key={user.id} className="flex items-center gap-2 text-sm text-[var(--text-primary)]"><input type="checkbox" checked={selected.includes(user.id)} onChange={(e) => setSelected((current) => e.target.checked ? [...current, user.id] : current.filter((id) => id !== user.id))} />{user.nombre} <span className="text-xs text-[var(--text-secondary)]">{user.rol}</span></label>)}</div>{error && <p className="text-sm text-danger">{error}</p>}<div className="flex justify-end gap-3"><button onClick={onClose} className="btn-secondary text-sm">Cancelar</button><button onClick={() => void save()} className="btn-primary text-sm">Guardar asignación</button></div></div></div>;
 }
 
 function InfoItem({ icon: Icon, label, value }: { icon: typeof Calendar; label: string; value: string }) {

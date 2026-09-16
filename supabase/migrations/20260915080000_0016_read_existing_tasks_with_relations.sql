@@ -34,6 +34,7 @@ BEGIN
     'proyectos', CASE WHEN proyecto.id IS NULL THEN NULL ELSE jsonb_build_object('nombre', proyecto.nombre) END,
     'tarea_asignados', COALESCE((
       SELECT jsonb_agg(jsonb_build_object(
+        'usuario_id', relacion.usuario_id,
         'usuarios', CASE WHEN asignado.id IS NULL THEN NULL ELSE jsonb_build_object('nombre', asignado.nombre) END
       ) ORDER BY asignado.nombre)
       FROM tarea_asignados AS relacion

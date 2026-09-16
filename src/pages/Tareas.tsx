@@ -64,11 +64,7 @@ export function Tareas() {
       alert('Ya tienes un cronómetro activo. Detenlo antes de iniciar otro.');
       return;
     }
-    const { data, error } = await supabase
-      .from('registros_tiempo')
-      .insert({ tarea_id: tareaId, usuario_id: usuario.id })
-      .select('id, inicio')
-      .single();
+    const { data, error } = await supabase.rpc('iniciar_cronometro_tarea', { p_tarea_id: tareaId });
     if (error) {
       alert('No se pudo iniciar el cronómetro: ' + error.message);
       return;
@@ -79,10 +75,7 @@ export function Tareas() {
 
   async function stopTimer() {
     if (!activeTimer) return;
-    const { error } = await supabase
-      .from('registros_tiempo')
-      .update({ fin: new Date().toISOString() })
-      .eq('id', activeTimer.registro_id);
+    const { error } = await supabase.rpc('finalizar_cronometro', { p_registro_id: activeTimer.registro_id });
     if (error) {
       alert('Error al detener: ' + error.message);
       return;

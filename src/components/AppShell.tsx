@@ -34,6 +34,7 @@ const NAV_ITEMS = [
   { to: '/tareas', label: 'Tareas', icon: CheckSquare },
   { to: '/calendario', label: 'Calendario', icon: Calendar },
   { to: '/tiempo', label: 'Registro de Tiempo', icon: Timer },
+  { to: '/cronometro', label: 'Cronómetro', icon: Timer },
   { to: '/equipo', label: 'Equipo', icon: Users },
   { to: '/reportes', label: 'Reportes', icon: BarChart3 },
   { to: '/mensajes', label: 'Mensajes', icon: MessageSquare },
@@ -238,5 +239,4 @@ export function useNewProjectDialog(): [boolean, (v: boolean) => void] {
 }
 
 // Re-export for type usage
-// eslint-disable-next-line react-refresh/only-export-components
 export type { ReactNode };

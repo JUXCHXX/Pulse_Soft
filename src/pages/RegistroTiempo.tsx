@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Clock, Play, Square, Timer as TimerIcon } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Square, Timer as TimerIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { Badge } from '@/components/Badge';
-import { getEstadoTarea } from '@/lib/constants';
 import { formatDuration, formatDate, formatHours } from '@/lib/format';
 import type { RegistroTiempo, Tarea } from '@/lib/types';
 
@@ -19,11 +18,6 @@ export function RegistroTiempo() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadRegistros();
-    loadActiveTimer();
-  }, []);
-
-  useEffect(() => {
     if (!activeTimer) return;
     const start = new Date(activeTimer.inicio).getTime();
     const interval = setInterval(() => {
@@ -32,7 +26,7 @@ export function RegistroTiempo() {
     return () => clearInterval(interval);
   }, [activeTimer]);
 
-  async function loadRegistros() {
+  const loadRegistros = useCallback(async () => {
     if (!usuario) return;
     setLoading(true);
     const { data } = await supabase
@@ -43,9 +37,9 @@ export function RegistroTiempo() {
       .limit(50);
     setRegistros((data as RegistroWithTarea[]) ?? []);
     setLoading(false);
-  }
+  }, [usuario]);
 
-  async function loadActiveTimer() {
+  const loadActiveTimer = useCallback(async () => {
     if (!usuario) return;
     const { data } = await supabase
       .from('vw_cronometros_activos')
@@ -57,14 +51,16 @@ export function RegistroTiempo() {
     } else {
       setActiveTimer(null);
     }
-  }
+  }, [usuario]);
+
+  useEffect(() => {
+    void loadRegistros();
+    void loadActiveTimer();
+  }, [loadActiveTimer, loadRegistros]);
 
   async function stopTimer() {
     if (!activeTimer) return;
-    const { error } = await supabase
-      .from('registros_tiempo')
-      .update({ fin: new Date().toISOString() })
-      .eq('id', activeTimer.registro_id);
+    const { error } = await supabase.rpc('finalizar_cronometro', { p_registro_id: activeTimer.registro_id });
     if (error) {
       alert('Error: ' + error.message);
       return;
@@ -129,7 +125,6 @@ export function RegistroTiempo() {
                 <tr><td colSpan={5} className="py-8 text-center text-sm text-[var(--text-secondary)]">Sin registros de tiempo</td></tr>
               )}
               {registros.map((r) => {
-                const est = getEstadoTarea(r.tareas?.estado ?? 'no_iniciado');
                 return (
                   <tr key={r.id} className="border-b border-[var(--border)] last:border-0">
                     <td className="py-3 pr-4 text-sm font-medium text-[var(--text-primary)]">{r.tareas?.nombre ?? '—'}</td>

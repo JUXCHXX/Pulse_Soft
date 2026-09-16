@@ -9,6 +9,7 @@ import { ProyectoDetalle } from '@/pages/ProyectoDetalle';
 import { Tareas } from '@/pages/Tareas';
 import { Calendario } from '@/pages/Calendario';
 import { RegistroTiempo } from '@/pages/RegistroTiempo';
+import { Cronometro } from '@/pages/Cronometro';
 import { Equipo } from '@/pages/Equipo';
 import { Reportes } from '@/pages/Reportes';
 import { Configuracion } from '@/pages/Configuracion';
@@ -43,6 +44,7 @@ function ProtectedRoutes() {
         <Route path="/tareas" element={<Tareas />} />
         <Route path="/calendario" element={<Calendario />} />
         <Route path="/tiempo" element={<RegistroTiempo />} />
+        <Route path="/cronometro" element={<Cronometro />} />
         <Route path="/equipo" element={<Equipo />} />
         <Route path="/reportes" element={<Reportes />} />
         <Route path="/mensajes" element={<Mensajes />} />

@@ -114,7 +114,7 @@ function EditUserModal({ user, onClose, onUpdated }: { user: Usuario; onClose: (
     event.preventDefault();
     setSaving(true);
     setError(null);
-    const { error: updateError } = await supabase.from('usuarios').update({ nombre: form.nombre.trim(), email: form.email.trim(), rol: form.rol, tarifa_hora: Number(form.tarifa) || 0, activo: form.activo }).eq('id', user.id);
+    const { error: updateError } = await supabase.rpc('actualizar_usuario_perfil', { p_usuario_id: user.id, p_nombre: form.nombre.trim(), p_email: form.email.trim(), p_rol: form.rol, p_tarifa: Number(form.tarifa) || 0, p_activo: form.activo });
     if (updateError) { setError(updateError.message); setSaving(false); return; }
     await onUpdated();
     onClose();
