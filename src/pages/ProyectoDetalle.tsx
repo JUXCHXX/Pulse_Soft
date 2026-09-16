@@ -29,7 +29,7 @@ import {
   formatRelativeTime,
   isOverdue,
 } from '@/lib/format';
-import type { Proyecto, Tarea, Usuario, ProyectoRol } from '@/lib/types';
+import type { Proyecto, Tarea, Usuario, ProyectoRol, Comunicacion } from '@/lib/types';
 
 type Tab = 'resumen' | 'tareas' | 'cronograma' | 'archivos' | 'discusiones' | 'reportes';
 type ProyectoProceso = { id: string; proyecto_id: string; nombre: string; orden: number };
@@ -44,6 +44,7 @@ export function ProyectoDetalle() {
   const [tareas, setTareas] = useState<(Tarea & { tarea_asignados: { usuarios: { nombre: string } | null }[] })[]>([]);
   const [procesos, setProcesos] = useState<ProyectoProceso[]>([]);
   const [roles, setRoles] = useState<(ProyectoRol & { usuarios: Usuario | null })[]>([]);
+  const [comunicaciones, setComunicaciones] = useState<Comunicacion[]>([]);
   const [resumen, setResumen] = useState<{
     total_tareas: number;
     tareas_completadas: number;
@@ -59,7 +60,7 @@ export function ProyectoDetalle() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [resProy, resTareas, resProcesos, resRoles, resResumen] = await Promise.all([
+    const [resProy, resTareas, resProcesos, resRoles, resResumen, resComunicaciones] = await Promise.all([
       supabase.from('proyectos').select('*').eq('id', id!).maybeSingle(),
       supabase
         .from('tareas')
@@ -76,6 +77,7 @@ export function ProyectoDetalle() {
         .select('*, usuarios(*)')
         .eq('proyecto_id', id!),
       supabase.from('vw_proyecto_resumen').select('*').eq('proyecto_id', id!).maybeSingle(),
+      supabase.from('comunicaciones').select('*').eq('proyecto_id', id!).order('fecha', { ascending: false }),
     ]);
 
     setProyecto(resProy.data as Proyecto | null);
@@ -83,6 +85,7 @@ export function ProyectoDetalle() {
     setProcesos((resProcesos.data as ProyectoProceso[]) ?? []);
     setRoles((resRoles.data as typeof roles) ?? []);
     setResumen(resResumen.data as typeof resumen);
+    setComunicaciones((resComunicaciones.data as Comunicacion[]) ?? []);
     setLoading(false);
   }, [id]);
 
@@ -176,6 +179,8 @@ export function ProyectoDetalle() {
                 <Badge color={estado.color}>{estado.label}</Badge>
                 <Badge color={prioridad.color}>{prioridad.label}</Badge>
                 <span className="text-xs text-[var(--text-secondary)]">{categoria.label}</span>
+                <span className="text-xs text-[var(--text-secondary)]">· {proyecto.linea_producto ?? (proyecto.template_key === 'support' ? 'Soporte' : 'Producto pendiente')}</span>
+                {proyecto.template_key && <span className="text-xs text-[var(--text-secondary)]">· {proyecto.template_key}</span>}
                 {proyecto.cliente && (
                   <span className="text-xs text-[var(--text-secondary)]">· {proyecto.cliente}</span>
                 )}
@@ -337,8 +342,9 @@ export function ProyectoDetalle() {
           )}
 
           {tab === 'discusiones' && (
-            <div className="card p-12 text-center">
-              <p className="text-[var(--text-secondary)]">No hay discusiones todavía.</p>
+            <div className="card p-6">
+              <h3 className="text-sm font-semibold text-[var(--text-secondary)] mb-4">Comunicaciones del proyecto</h3>
+              {comunicaciones.length === 0 ? <p className="text-[var(--text-secondary)] text-center py-8">No hay comunicaciones registradas.</p> : <div className="space-y-3">{comunicaciones.map((comunicacion) => <div key={comunicacion.id} className="rounded-lg border border-[var(--border)] p-3"><div className="flex items-center justify-between gap-3"><span className="text-sm font-medium text-[var(--text-primary)]">{comunicacion.tipo}</span><span className="text-xs text-[var(--text-secondary)]">{formatDate(comunicacion.fecha)}</span></div>{comunicacion.resultado && <p className="text-sm text-[var(--text-primary)] mt-1">{comunicacion.resultado}</p>}{comunicacion.notas && <p className="text-xs text-[var(--text-secondary)] mt-1">{comunicacion.notas}</p>}</div>)}</div>}
             </div>
           )}
 
@@ -486,8 +492,9 @@ function InfoItem({ icon: Icon, label, value }: { icon: typeof Calendar; label: 
 }
 
 function ScheduleView({ procesos, tareas }: { procesos: ProyectoProceso[]; tareas: (Tarea & { tarea_asignados?: { usuarios: { nombre: string } | null }[] })[] }) {
-  if (procesos.length === 0) {
-    return <p className="text-sm text-[var(--text-secondary)] text-center py-8">Este proyecto no tiene procesos de cronograma instanciados.</p>;
+  const historicalTasks = tareas.filter((task) => !task.proceso_id);
+  if (procesos.length === 0 && historicalTasks.length === 0) {
+    return <p className="text-sm text-[var(--text-secondary)] text-center py-8">Este proyecto no tiene actividades de cronograma.</p>;
   }
 
   return (
@@ -523,6 +530,7 @@ function ScheduleView({ procesos, tareas }: { procesos: ProyectoProceso[]; tarea
           </section>
         );
       })}
+      {historicalTasks.length > 0 && <section className="border border-amber-200 rounded-lg overflow-hidden"><div className="flex items-center justify-between gap-3 bg-amber-50/50 px-4 py-3"><h4 className="text-sm font-semibold text-[var(--text-primary)]">Actividades históricas importadas</h4><span className="text-xs text-[var(--text-secondary)]">{historicalTasks.length} actividades</span></div><div className="divide-y divide-[var(--border)]">{historicalTasks.sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0)).map((task) => <div key={task.id} className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto_auto] gap-2 items-center px-4 py-3"><div className="min-w-0"><p className="text-sm text-[var(--text-primary)] truncate">{task.nombre}</p><p className="text-xs text-[var(--text-secondary)]">Sin proceso de plantilla; registro histórico</p></div><span className="text-xs text-[var(--text-secondary)]">{formatDate(task.fecha_inicio)} - {formatDate(task.fecha_limite)}</span><Badge color={getEstadoTarea(task.estado).color}>{getEstadoTarea(task.estado).label}</Badge></div>)}</div></section>}
     </div>
   );
 }

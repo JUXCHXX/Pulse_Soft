@@ -8,9 +8,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   MessageSquare,
-  Calendar,
-  ArrowUpRight,
-  ArrowDownRight,
 } from 'lucide-react';
 import {
   PieChart,
@@ -25,12 +22,10 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/context/AuthContext';
-import { Avatar, AvatarStack } from '@/components/Avatar';
+import { Avatar } from '@/components/Avatar';
 import { Badge, ProgressBar } from '@/components/Badge';
 import {
   getEstadoProyecto,
-  getEstadoTarea,
   getPrioridad,
 } from '@/lib/constants';
 import {
@@ -45,11 +40,9 @@ import type {
   VwCargaConsultor,
   VwCronometroActivo,
   Tarea,
-  Proyecto,
 } from '@/lib/types';
 
 export function Dashboard() {
-  const { usuario } = useAuth();
   const [loading, setLoading] = useState(true);
   const [proyectos, setProyectos] = useState<VwProyectoResumen[]>([]);
   const [cargaConsultores, setCargaConsultores] = useState<VwCargaConsultor[]>([]);
@@ -153,32 +146,24 @@ export function Dashboard() {
           icon={FolderKanban}
           label="Proyectos activos"
           value={proyectosActivos.toString()}
-          change="+2"
-          changeUp
           color="caribbean-green"
         />
         <StatCard
           icon={CheckSquare}
           label="Tareas completadas"
           value={tareasCompletadas.toString()}
-          change="+12%"
-          changeUp
           color="mountain-meadow"
         />
         <StatCard
           icon={Clock}
           label="Horas registradas"
           value={formatHours(cargaConsultores.reduce((s, c) => s + c.horas_registradas_totales, 0))}
-          change="+8h"
-          changeUp
           color="info"
         />
         <StatCard
           icon={TrendingUp}
           label="Costo real total"
           value={formatCurrency(costoTotal)}
-          change="-5%"
-          changeUp={false}
           color="warning"
         />
       </div>
@@ -450,15 +435,11 @@ function StatCard({
   icon: Icon,
   label,
   value,
-  change,
-  changeUp,
   color,
 }: {
   icon: typeof FolderKanban;
   label: string;
   value: string;
-  change: string;
-  changeUp: boolean;
   color: string;
 }) {
   const colorMap: Record<string, string> = {
@@ -472,14 +453,6 @@ function StatCard({
       <div className="flex items-start justify-between">
         <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${colorMap[color]}`}>
           <Icon className="w-5 h-5" />
-        </div>
-        <div
-          className={`flex items-center gap-0.5 text-xs font-medium ${
-            changeUp ? 'text-success' : 'text-danger'
-          }`}
-        >
-          {changeUp ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-          {change}
         </div>
       </div>
       <p className="text-2xl font-bold text-[var(--text-primary)] mt-3">{value}</p>

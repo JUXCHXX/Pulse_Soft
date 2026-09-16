@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Users, Plus, Mail, DollarSign, Briefcase } from 'lucide-react';
+import { Plus, Mail, DollarSign, Briefcase, Edit3 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { Avatar } from '@/components/Avatar';
-import { Badge, ProgressBar } from '@/components/Badge';
+import { Badge } from '@/components/Badge';
 import { getRol, ROLES } from '@/lib/constants';
 import { formatCurrency, formatHours } from '@/lib/format';
 import type { Usuario, VwCargaConsultor, RolUsuario } from '@/lib/types';
@@ -12,9 +12,9 @@ export function Equipo() {
   const { usuario } = useAuth();
   const isPMO = usuario?.rol === 'pmo';
   const [usuarios, setUsuarios] = useState<(Usuario & { vw_carga_consultor?: VwCargaConsultor })[]>([]);
-  const [carga, setCarga] = useState<VwCargaConsultor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [editingUser, setEditingUser] = useState<Usuario | null>(null);
 
   useEffect(() => {
     loadData();
@@ -69,6 +69,7 @@ export function Equipo() {
                   </p>
                 </div>
                 <Badge color="bg-info/15 text-info">{rol.label}</Badge>
+                {isPMO && <button onClick={() => setEditingUser(u)} className="text-[var(--text-secondary)] hover:text-[var(--accent)]" title="Editar usuario"><Edit3 className="w-4 h-4" /></button>}
               </div>
               <div className="space-y-2">
                 {isPMO && (
@@ -99,8 +100,27 @@ export function Equipo() {
       </div>
 
       {showNew && isPMO && <NewUserModal onClose={() => setShowNew(false)} onCreated={loadData} />}
+      {editingUser && isPMO && <EditUserModal user={editingUser} onClose={() => setEditingUser(null)} onUpdated={loadData} />}
     </div>
   );
+}
+
+function EditUserModal({ user, onClose, onUpdated }: { user: Usuario; onClose: () => void; onUpdated: () => void }) {
+  const [form, setForm] = useState({ nombre: user.nombre, email: user.email, rol: user.rol, tarifa: String(user.tarifa_hora ?? 0), activo: user.activo });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    const { error: updateError } = await supabase.from('usuarios').update({ nombre: form.nombre.trim(), email: form.email.trim(), rol: form.rol, tarifa_hora: Number(form.tarifa) || 0, activo: form.activo }).eq('id', user.id);
+    if (updateError) { setError(updateError.message); setSaving(false); return; }
+    await onUpdated();
+    onClose();
+  }
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><form onSubmit={handleSubmit} className="card p-6 w-full max-w-md space-y-4"><div><h3 className="text-lg font-bold text-[var(--text-primary)]">Editar usuario</h3><p className="text-xs text-[var(--text-secondary)] mt-1">Perfil de negocio existente. La autenticación de Supabase se mantiene separada.</p></div><label className="text-sm text-[var(--text-primary)]">Nombre<input required value={form.nombre} onChange={(event) => setForm({ ...form, nombre: event.target.value })} className="input-field mt-1" /></label><label className="text-sm text-[var(--text-primary)]">Correo electrónico<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} className="input-field mt-1" /></label><label className="text-sm text-[var(--text-primary)]">Rol<select value={form.rol} onChange={(event) => setForm({ ...form, rol: event.target.value as RolUsuario })} className="input-field mt-1">{ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label><label className="text-sm text-[var(--text-primary)]">Tarifa/hora<input type="number" min="0" value={form.tarifa} onChange={(event) => setForm({ ...form, tarifa: event.target.value })} className="input-field mt-1" /></label><label className="flex items-center gap-2 text-sm text-[var(--text-primary)]"><input type="checkbox" checked={form.activo} onChange={(event) => setForm({ ...form, activo: event.target.checked })} /> Usuario activo</label>{user.auth_id ? <p className="text-xs text-success">Cuenta de autenticación vinculada.</p> : <p className="text-xs text-amber-700">Pendiente de completar autenticación. Este cambio solo actualiza el perfil de negocio.</p>}{error && <p className="text-sm text-danger">{error}</p>}<div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="btn-secondary text-sm">Cancelar</button><button disabled={saving} className="btn-primary text-sm">{saving ? 'Guardando…' : 'Guardar cambios'}</button></div></form></div>;
 }
 
 function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -112,7 +132,7 @@ function NewUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
     e.preventDefault();
     setSaving(true);
     setError(null);
-    const { data, error } = await supabase.rpc('crear_usuario_auth', {
+    const { error } = await supabase.rpc('crear_usuario_auth', {
       p_nombre: form.nombre,
       p_email: form.email,
       p_password: form.password,

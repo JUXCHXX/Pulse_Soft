@@ -147,6 +147,10 @@ export function Proyectos() {
                 <h3 className="text-base font-semibold text-[var(--text-primary)] mb-1 group-hover:text-[var(--accent)] transition-colors">
                   {p.nombre}
                 </h3>
+                <p className="text-xs text-[var(--text-secondary)] mb-3">
+                  {p.linea_producto ?? (p.template_key === 'support' ? 'Soporte' : p.template_key ?? 'Producto pendiente')}
+                  {p.template_key ? ` · ${p.template_key}` : ''}
+                </p>
                 <div className="flex items-center gap-2 mb-4">
                   <Badge color={estado.color}>{estado.label}</Badge>
                   <Badge color={prioridad.color}>{prioridad.label}</Badge>

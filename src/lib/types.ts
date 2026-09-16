@@ -171,6 +171,8 @@ export interface Importacion {
 export interface VwProyectoResumen {
   proyecto_id: string;
   nombre: string;
+  linea_producto?: string | null;
+  template_key?: string | null;
   estado: EstadoProyecto;
   prioridad: PrioridadNivel;
   valor_estimado: number | null;

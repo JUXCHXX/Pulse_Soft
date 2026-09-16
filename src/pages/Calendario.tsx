@@ -1,10 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Calendar as CalIcon, FolderKanban, CheckSquare, Users, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { Badge } from '@/components/Badge';
-import { getEstadoTarea, getPrioridad } from '@/lib/constants';
 import { isOverdue } from '@/lib/format';
-import type { Tarea, Reunion, Proyecto } from '@/lib/types';
+import type { Tarea, Reunion } from '@/lib/types';
 
 interface TareaWithProy extends Tarea {
   proyectos: { nombre: string } | null;
@@ -16,11 +14,7 @@ export function Calendario() {
   const [reuniones, setReuniones] = useState<(Reunion & { proyectos: { nombre: string } | null })[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadData();
-  }, [currentMonth]);
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
     const year = currentMonth.getFullYear();
     const month = currentMonth.getMonth();
@@ -33,7 +27,7 @@ export function Calendario() {
         .select('*, proyectos(nombre)')
         .gte('fecha_limite', firstDay)
         .lte('fecha_limite', lastDay)
-        .order('fecha_limine', { ascending: true }),
+        .order('fecha_limite', { ascending: true }),
       supabase
         .from('reuniones')
         .select('*, proyectos(nombre)')
@@ -42,10 +36,16 @@ export function Calendario() {
         .order('fecha', { ascending: true }),
     ]);
 
+    if (resTareas.error) console.error('Error cargando tareas del calendario:', resTareas.error);
+    if (resReuniones.error) console.error('Error cargando reuniones del calendario:', resReuniones.error);
     setTareas((resTareas.data as TareaWithProy[]) ?? []);
     setReuniones((resReuniones.data as (Reunion & { proyectos: { nombre: string } | null })[]) ?? []);
     setLoading(false);
-  }
+  }, [currentMonth]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const monthName = currentMonth.toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
   const firstDayOfWeek = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).getDay();
