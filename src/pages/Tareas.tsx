@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Play, Pause, Square, Timer as TimerIcon, Clock } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Play, Square, Timer as TimerIcon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import { Avatar, AvatarStack } from '@/components/Avatar';
+import { AvatarStack } from '@/components/Avatar';
 import { Badge } from '@/components/Badge';
 import { getEstadoTarea, getPrioridad } from '@/lib/constants';
 import { formatDate, formatDuration, isOverdue } from '@/lib/format';
@@ -23,11 +23,6 @@ export function Tareas() {
   const [filterPrioridad, setFilterPrioridad] = useState<PrioridadNivel | 'todos'>('todos');
 
   useEffect(() => {
-    loadTareas();
-    loadActiveTimer();
-  }, []);
-
-  useEffect(() => {
     if (!activeTimer) return;
     const start = new Date(activeTimer.inicio).getTime();
     const interval = setInterval(() => {
@@ -38,16 +33,13 @@ export function Tareas() {
 
   async function loadTareas() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('tareas')
-      .select('*, proyectos(nombre), tarea_asignados(usuarios(nombre))')
-      .order('fecha_limite', { ascending: true, nullsFirst: false });
+    const { data, error } = await supabase.rpc('listar_tareas_existentes', { p_proyecto_id: null });
     if (error) console.error('Error cargando tareas:', error);
     setTareas((data as TareaRow[]) ?? []);
     setLoading(false);
   }
 
-  async function loadActiveTimer() {
+  const loadActiveTimer = useCallback(async () => {
     if (!usuario) return;
     const { data } = await supabase
       .from('vw_cronometros_activos')
@@ -59,7 +51,12 @@ export function Tareas() {
     } else {
       setActiveTimer(null);
     }
-  }
+  }, [usuario]);
+
+  useEffect(() => {
+    void loadTareas();
+    void loadActiveTimer();
+  }, [loadActiveTimer, usuario]);
 
   async function startTimer(tareaId: string) {
     if (!usuario) return;

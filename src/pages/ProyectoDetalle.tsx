@@ -62,11 +62,7 @@ export function ProyectoDetalle() {
     setLoading(true);
     const [resProy, resTareas, resProcesos, resRoles, resResumen, resComunicaciones] = await Promise.all([
       supabase.from('proyectos').select('*').eq('id', id!).maybeSingle(),
-      supabase
-        .from('tareas')
-        .select('*, tarea_asignados(usuarios(nombre))')
-        .eq('proyecto_id', id!)
-        .order('fecha_limite', { ascending: true, nullsFirst: false }),
+      supabase.rpc('listar_tareas_existentes', { p_proyecto_id: id! }),
       supabase
         .from('proyecto_procesos')
         .select('*')
